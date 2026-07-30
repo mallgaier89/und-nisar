@@ -6,11 +6,15 @@
 
 import pathlib                                   # standard-library path handling
 import re                                        # regex for parsing acquisition dates from filenames
+from datetime import datetime                    # parsing acquisition dates to compute temporal baselines
 import numpy as np                               # array operations and stacking
 import h5py                                      # HDF5 file reader for NISAR data
 import pyproj                                    # coordinate reference system transformations
+from scipy.interpolate import RegularGridInterpolator  # coarse-grid → full-res incidence angle interpolation
 import earthaccess                               # NASA Earthdata download client
 from search_nisar import search_nisar_granules   # CMR search function from search_nisar.py
+
+C_LIGHT = 299_792_458.0  # speed of light, m/s — used to convert radar center frequency to wavelength
 
 
 # =============================================================================
@@ -28,18 +32,45 @@ def download(granule, output_dir):
 
 
 # =============================================================================
+# Stack persistence
+# Writes the finished time-series stack to a single HDF5 file so downstream
+# scripts (e.g. process_displacement.py) can pick up from here without
+# re-downloading or re-cropping any granules.
+# =============================================================================
+def save_stack(path, phase_3d, coherence_3d, incidence_3d, dates, baselines_days,
+                canvas_x, canvas_y, dx, dy, epsg, wavelength_m):
+    """Persist the assembled time-series stack and its geolocation/radar metadata to an HDF5 file."""
+    with h5py.File(path, "w") as hf:                        # create/overwrite the output file
+        hf.create_dataset("phase_3d", data=phase_3d)             # LOS unwrapped phase, radians (n, rows, cols)
+        hf.create_dataset("coherence_3d", data=coherence_3d)     # coherence magnitude, 0-1 (n, rows, cols)
+        hf.create_dataset("incidence_3d", data=incidence_3d)     # incidence angle, degrees (n, rows, cols)
+        hf.create_dataset("dates", data=np.array(dates, dtype="S8"))          # secondary acquisition dates (YYYYMMDD)
+        hf.create_dataset("baselines_days", data=baselines_days)             # temporal baseline per layer (days)
+        hf.create_dataset("canvas_x", data=canvas_x)                          # canvas easting coordinates (meters)
+        hf.create_dataset("canvas_y", data=canvas_y)                          # canvas northing coordinates (meters)
+        hf.attrs["dx"] = dx                                     # easting pixel spacing (meters)
+        hf.attrs["dy"] = dy                                     # northing pixel spacing (meters)
+        hf.attrs["epsg"] = epsg                                 # projected CRS EPSG code
+        hf.attrs["wavelength_m"] = wavelength_m                 # radar wavelength (meters)
+    print(f"Stack saved: {pathlib.Path(path).resolve()}")  # confirm the file landed on disk
+
+
+# =============================================================================
 # Parameters
 # Edit these values to change the search region, product, or date window.
 # =============================================================================
-SHORT_NAME  = "NISAR_L2_GUNW_BETA_V1"  # NISAR Level-2 Geocoded Unwrapped Interferogram (Beta V1)
-LAT_MIN     = 67.412962                 # southern boundary — Brooks Range, Alaska
-LAT_MAX     = 68.731326                 # northern boundary — Brooks Range, Alaska
-LON_MIN     = -150.190912               # western boundary — Brooks Range, Alaska
-LON_MAX     = -149.539300               # eastern boundary — Brooks Range, Alaska
-DATE_START  = "2025-10-01"              # start of the temporal search window
-DATE_END    = "2025-11-19"              # end of the temporal search window
-COUNT       = 50                        # maximum granules to retrieve from CMR
+SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+LAT_MIN    = 68.6000            # southern boundary — Brooks Range, Alaska
+LAT_MAX    = 69.0000              # northern boundary — Brooks Range, Alaska
+LON_MIN    = -149.7047             # western boundary — Brooks Range, Alaska
+LON_MAX    = -149.0000            # eastern boundary — Brooks Range, Alaska
+DATE_START = "2026-06-01"           # start of search window
+DATE_END   = "2026-08-01"           # end of search window
+COUNT      = 100                     # cap at 50 results for a quick test run
+ORBIT_DIRECTION = 'ascending'              # 'ascending', 'descending', or None for both
+
 LOCAL_PATH  = "./data"                  # local directory for downloaded files
+STACK_OUTPUT_PATH = "./data/timeseries_stack.h5"  # intermediate stack file for process_displacement.py
 
 
 # =============================================================================
@@ -52,6 +83,13 @@ PHASE_PATH   = "/science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH/un
 X_COORD_PATH = "/science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH/xCoordinates"    # 1D easting array (meters, projected)
 Y_COORD_PATH = "/science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH/yCoordinates"    # 1D northing array (meters, projected)
 PROJ_PATH    = "/science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/projection"          # EPSG code (uint32) for the projected CRS
+COHERENCE_PATH          = "/science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH/coherenceMagnitude"  # 2D coherence magnitude (0-1), same grid as phase
+CENTER_FREQ_PATH        = "/science/LSAR/GUNW/grids/frequencyA/centerFrequency"                                # radar center frequency (Hz)
+RADARGRID_INC_PATH      = "/science/LSAR/GUNW/metadata/radarGrid/incidenceAngle"                               # (height, row, col) incidence angle (degrees) on the coarse geometry grid
+RADARGRID_X_PATH        = "/science/LSAR/GUNW/metadata/radarGrid/xCoordinates"                                 # 1D easting array for the coarse geometry grid (meters)
+RADARGRID_Y_PATH        = "/science/LSAR/GUNW/metadata/radarGrid/yCoordinates"                                 # 1D northing array for the coarse geometry grid (meters, descending order)
+RADARGRID_HEIGHTS_PATH  = "/science/LSAR/GUNW/metadata/radarGrid/heightAboveEllipsoid"                         # height levels at which incidence angle is tabulated (meters)
+REF_TERRAIN_HEIGHT_PATH = "/science/LSAR/GUNW/metadata/processingInformation/parameters/reference/referenceTerrainHeight"  # terrain height profile along the reference orbit (meters)
 
 
 # =============================================================================
@@ -77,6 +115,7 @@ granules = search_nisar_granules(  # query CMR for matching NISAR granules
     date_start = DATE_START,       # temporal filter — start date
     date_end   = DATE_END,         # temporal filter — end date
     count      = COUNT,            # cap on granules returned
+    orbit_direction = ORBIT_DIRECTION,  # 'ascending', 'descending', or None
 )
 
 
@@ -88,11 +127,14 @@ granules = search_nisar_granules(  # query CMR for matching NISAR granules
 # keeps the projected→geographic transformer alive after the HDF5 file closes
 # so it can be used in the post-loop canvas block.
 # =============================================================================
-crop_items       = []    # list of (phase_crop_2d, x_start, y_start) per valid granule
+crop_items       = []    # list of (phase_crop_2d, coherence_crop_2d, incidence_crop_2d, x_start, y_start) per valid granule
 dates            = []    # secondary acquisition date (YYYYMMDD) per valid granule
+baselines_days   = []    # temporal baseline (secondary date - reference date, days) per valid granule
 dx               = None  # easting pixel spacing in meters — set from first valid granule
 dy               = None  # northing pixel spacing in meters — set from first valid granule
 tf_to_geo_stored = None  # projected → geographic transformer — set from first valid granule
+epsg_stored      = None  # projected CRS EPSG code — set from first valid granule
+wavelength_m     = None  # radar wavelength in meters — set from first valid granule
 downloaded_paths = []    # local file paths for all downloaded files
 total            = len(granules)  # total granules returned by the search
 
@@ -127,31 +169,49 @@ for i, granule in enumerate(granules):  # one granule per iteration
     # -------------------------------------------------------------------------
     with h5py.File(local_files[0], "r") as hf:  # open HDF5 in read-only mode; closes automatically
 
-        # --- read projection and build coordinate transformer ----------------
+        # --- read projection and build coordinate transformers ----------------
         proj_epsg  = int(hf[PROJ_PATH][()])                                           # EPSG code stored as uint32
         crs_proj   = pyproj.CRS.from_epsg(proj_epsg)                                 # projected CRS object
         crs_geo    = pyproj.CRS.from_epsg(4326)                                      # WGS84 geographic CRS
         tf_to_geo  = pyproj.Transformer.from_crs(crs_proj, crs_geo, always_xy=True)  # projected → degrees
+        tf_to_proj = pyproj.Transformer.from_crs(crs_geo, crs_proj, always_xy=True)  # degrees → projected
 
         # --- read full 1D coordinate arrays (meters) -------------------------
         x_coords = hf[X_COORD_PATH][:]  # full 1D easting array for all columns (meters)
         y_coords = hf[Y_COORD_PATH][:]  # full 1D northing array for all rows (meters)
 
-        # --- convert 1D coordinate arrays to approximate degrees -------------
-        # Each axis is converted at the centre value of the other axis.
-        # Accurate to within one pixel for small AOIs; avoids a full 2D meshgrid.
-        y_centre   = float(np.mean(y_coords))                                # fixed northing for x → lon
-        x_centre   = float(np.mean(x_coords))                                # fixed easting for y → lat
-        lons_1d, _ = tf_to_geo.transform(x_coords,                           # convert each easting …
-                                          np.full_like(x_coords, y_centre))  # … at the centre northing
-        _, lats_1d = tf_to_geo.transform(np.full_like(y_coords, x_centre),   # convert each northing …
-                                          y_coords)                           # … at the centre easting
+        # -------------------------------------------------------------------------
+        # Reproject the search bbox into this granule's projected CRS, rather than
+        # converting the grid to lon/lat at a single center row/column. Near the
+        # poles a polar-stereographic swath can be significantly rotated relative
+        # to lines of constant latitude/longitude, so a lon/lat test evaluated
+        # only along the grid's center slice can miss a real overlap entirely.
+        # The bbox perimeter is densified (a lat/lon rectangle maps to a curved
+        # shape in projected space) and its bounding box is used for the crop
+        # test below, run directly in the data's native, unrotated (x, y) space.
+        # -------------------------------------------------------------------------
+        n_perim   = 25  # points per edge — dense enough that the bounding box isn't underestimated
+        perim_lon = np.concatenate([
+            np.linspace(LON_MIN, LON_MAX, n_perim),  # bottom edge
+            np.linspace(LON_MIN, LON_MAX, n_perim),  # top edge
+            np.full(n_perim, LON_MIN),                # left edge
+            np.full(n_perim, LON_MAX),                # right edge
+        ])
+        perim_lat = np.concatenate([
+            np.full(n_perim, LAT_MIN),                 # bottom edge
+            np.full(n_perim, LAT_MAX),                 # top edge
+            np.linspace(LAT_MIN, LAT_MAX, n_perim),   # left edge
+            np.linspace(LAT_MIN, LAT_MAX, n_perim),   # right edge
+        ])
+        perim_x, perim_y = tf_to_proj.transform(perim_lon, perim_lat)  # bbox perimeter in projected meters
+        x_bbox_min, x_bbox_max = perim_x.min(), perim_x.max()          # projected-space bounding box
+        y_bbox_min, y_bbox_max = perim_y.min(), perim_y.max()
 
-        # --- find bounding-box pixel indices in degree-space -----------------
-        col_mask    = (lons_1d >= LON_MIN) & (lons_1d <= LON_MAX)  # True for columns inside bbox
-        row_mask    = (lats_1d >= LAT_MIN) & (lats_1d <= LAT_MAX)  # True for rows inside bbox
-        col_indices = np.where(col_mask)[0]                         # integer column indices inside bbox
-        row_indices = np.where(row_mask)[0]                         # integer row indices inside bbox
+        # --- find bounding-box pixel indices directly in projected space -----
+        col_mask    = (x_coords >= x_bbox_min) & (x_coords <= x_bbox_max)  # True for columns inside bbox
+        row_mask    = (y_coords >= y_bbox_min) & (y_coords <= y_bbox_max)  # True for rows inside bbox
+        col_indices = np.where(col_mask)[0]                                 # integer column indices inside bbox
+        row_indices = np.where(row_mask)[0]                                 # integer row indices inside bbox
 
         # --- skip tiles with no overlap --------------------------------------
         if col_indices.size == 0 or row_indices.size == 0:          # no pixels fall inside the bbox
@@ -163,36 +223,74 @@ for i, granule in enumerate(granules):  # one granule per iteration
         row_start = int(row_indices[0])       # first row of the cropped region
         row_end   = int(row_indices[-1]) + 1  # one past the last row (exclusive)
 
-        # --- read only the cropped phase slice from disk ---------------------
+        # --- read only the cropped phase and coherence slices from disk ------
         # h5py slice indexing reads only the selected rectangle; the full
         # raster is never loaded into memory.
-        phase_crop = hf[PHASE_PATH][row_start:row_end, col_start:col_end]  # 2D float array (radians)
-        phase_crop = phase_crop.astype(np.float32)                          # consistent dtype across files
+        phase_crop      = hf[PHASE_PATH][row_start:row_end, col_start:col_end]       # 2D float array (radians)
+        phase_crop      = phase_crop.astype(np.float32)                             # consistent dtype across files
+        coherence_crop  = hf[COHERENCE_PATH][row_start:row_end, col_start:col_end]   # 2D float array (0-1)
+        coherence_crop  = coherence_crop.astype(np.float32)                         # consistent dtype across files
 
-        # --- capture pixel spacing and transformer from first valid granule --
-        # dx / dy and tf_to_geo are identical for every NISAR GUNW granule
-        # (same grid, same CRS), so we only need to store them once.
+        # -------------------------------------------------------------------------
+        # Incidence angle crop — interpolated from the coarse radarGrid geometry
+        # The incidence angle is only tabulated on a coarse (height, row, col) grid,
+        # not on the full-resolution phase grid, so it must be interpolated onto the
+        # exact pixel centers of the cropped phase region. Height varies the incidence
+        # angle negligibly compared to across-swath position, so a single height
+        # layer — the one nearest the median reference terrain height — is used.
+        # -------------------------------------------------------------------------
+        rg_heights   = hf[RADARGRID_HEIGHTS_PATH][:]                      # 1D height levels (meters)
+        ref_height   = float(np.median(hf[REF_TERRAIN_HEIGHT_PATH][:]))   # representative terrain height for this scene
+        height_idx   = int(np.argmin(np.abs(rg_heights - ref_height)))    # nearest tabulated height layer
+        rg_x         = hf[RADARGRID_X_PATH][:]                            # coarse-grid easting axis (meters)
+        rg_y         = hf[RADARGRID_Y_PATH][:]                            # coarse-grid northing axis (meters, descending)
+        rg_incidence = hf[RADARGRID_INC_PATH][height_idx, :, :]           # (rows, cols) incidence angle (degrees) at that height
+
+        incidence_interp = RegularGridInterpolator(                       # bilinear interpolator over the coarse grid
+            (rg_y, rg_x), rg_incidence, bounds_error=False, fill_value=None
+        )
+        crop_y_mesh, crop_x_mesh = np.meshgrid(                           # full-res pixel centers within the crop
+            y_coords[row_start:row_end], x_coords[col_start:col_end], indexing="ij"
+        )
+        incidence_crop = incidence_interp((crop_y_mesh, crop_x_mesh)).astype(np.float32)  # (rows, cols) degrees
+
+        # --- capture pixel spacing, transformer, CRS, and wavelength from first valid granule --
+        # dx / dy, tf_to_geo, the EPSG code, and the radar wavelength are identical
+        # for every NISAR GUNW granule (same grid, same CRS, same L-band radar), so
+        # we only need to store them once.
         if dx is None:
             dx               = float(x_coords[1] - x_coords[0])  # easting step (meters, positive)
             dy               = float(y_coords[1] - y_coords[0])  # northing step (meters, sign = direction)
             tf_to_geo_stored = tf_to_geo                          # keep transformer alive after file closes
+            epsg_stored      = proj_epsg                          # projected CRS EPSG code, for GeoTIFF export later
+            center_freq_hz   = float(hf[CENTER_FREQ_PATH][()])    # radar center frequency (Hz)
+            wavelength_m     = C_LIGHT / center_freq_hz            # radar wavelength (meters)
 
         # --- record crop with its projected top-left coordinate --------------
         x_start = float(x_coords[col_start])  # easting of the crop's first column
         y_start = float(y_coords[row_start])  # northing of the crop's first row
-        crop_items.append((phase_crop, x_start, y_start))  # store for canvas assembly after loop
+        crop_items.append((phase_crop, coherence_crop, incidence_crop, x_start, y_start))  # store for canvas assembly after loop
         print(f"  Crop extracted: {phase_crop.shape}, "
               f"x={x_start:.0f}, y={y_start:.0f}")         # log crop size and projected origin
 
-    # --- extract secondary acquisition date from filename --------------------
+    # --- extract reference and secondary acquisition dates from filename -----
     # NISAR GUNW filenames contain four YYYYMMDDTHHMMSS datetime strings:
     # ref_start, ref_stop, secondary_start, secondary_stop.
-    # The secondary start date (index 2) identifies this interferogram in time.
-    date_matches   = re.findall(r"\d{8}T\d{6}", local_files[0].name)               # find all datetime strings
-    secondary_date = date_matches[2][:8] if len(date_matches) >= 3 else "unknown"  # extract YYYYMMDD
+    # The reference start date (index 0) and secondary start date (index 2)
+    # identify this interferogram pair in time; their difference is the
+    # temporal baseline used later for per-pixel rate estimation.
+    date_matches    = re.findall(r"\d{8}T\d{6}", local_files[0].name)               # find all datetime strings
+    reference_date  = date_matches[0][:8] if len(date_matches) >= 1 else "unknown"  # extract YYYYMMDD
+    secondary_date  = date_matches[2][:8] if len(date_matches) >= 3 else "unknown"  # extract YYYYMMDD
+    if reference_date != "unknown" and secondary_date != "unknown":
+        baseline_days = (datetime.strptime(secondary_date, "%Y%m%d")
+                          - datetime.strptime(reference_date, "%Y%m%d")).days       # temporal baseline in days
+    else:
+        baseline_days = None
 
     # --- accumulate results --------------------------------------------------
     dates.append(secondary_date)          # record the secondary acquisition date
+    baselines_days.append(baseline_days)  # record the temporal baseline for this pair
     downloaded_paths.extend(local_files)  # record the local file path
 
     # --- post-processing filter (placeholder) --------------------------------
@@ -208,10 +306,10 @@ for i, granule in enumerate(granules):  # one granule per iteration
 # The canvas spans the union of all crop extents; areas not covered by a given
 # granule remain NaN in that granule's layer.
 # =============================================================================
-all_x_first = [item[1]                              for item in crop_items]  # easting of each crop's first col
-all_x_last  = [item[1] + (item[0].shape[1]-1) * dx  for item in crop_items]  # easting of each crop's last col
-all_y_first = [item[2]                              for item in crop_items]  # northing of each crop's first row
-all_y_last  = [item[2] + (item[0].shape[0]-1) * dy  for item in crop_items]  # northing of each crop's last row
+all_x_first = [item[3]                              for item in crop_items]  # easting of each crop's first col
+all_x_last  = [item[3] + (item[0].shape[1]-1) * dx  for item in crop_items]  # easting of each crop's last col
+all_y_first = [item[4]                              for item in crop_items]  # northing of each crop's first row
+all_y_last  = [item[4] + (item[0].shape[0]-1) * dy  for item in crop_items]  # northing of each crop's last row
 
 x_canvas_start = min(all_x_first)   # westernmost easting across all crops
 x_canvas_end   = max(all_x_last)    # easternmost easting across all crops
@@ -245,15 +343,20 @@ lats           = lats.astype(np.float32)                        # store as float
 # Shape: (n_granules, canvas_rows, canvas_cols).  NaN marks pixels not covered
 # by a given granule.  dates is a 1D numpy array aligned with axis 0.
 # =============================================================================
-phase_3d = np.full((len(crop_items), canvas_rows, canvas_cols), np.nan, dtype=np.float32)  # pre-allocate with NaN
-dates    = np.array(dates)                                                                  # 1D YYYYMMDD date array
+phase_3d      = np.full((len(crop_items), canvas_rows, canvas_cols), np.nan, dtype=np.float32)  # pre-allocate with NaN
+coherence_3d  = np.full((len(crop_items), canvas_rows, canvas_cols), np.nan, dtype=np.float32)  # pre-allocate with NaN
+incidence_3d  = np.full((len(crop_items), canvas_rows, canvas_cols), np.nan, dtype=np.float32)  # pre-allocate with NaN
+dates          = np.array(dates)                                                            # 1D YYYYMMDD date array
+baselines_days = np.array(baselines_days, dtype=np.float64)                                  # 1D temporal baseline array (days)
 
-for k, (phase_crop, x_start, y_start) in enumerate(crop_items):  # place each crop onto its canvas layer
+for k, (phase_crop, coherence_crop, incidence_crop, x_start, y_start) in enumerate(crop_items):  # place each crop onto its canvas layer
     col_offset = int(round((x_start - canvas_x[0]) / dx))         # exact integer column offset within canvas
     row_offset = int(round((y_start - canvas_y[0]) / dy))         # exact integer row offset within canvas
-    phase_3d[k,                                                    # time index for this granule
-             row_offset : row_offset + phase_crop.shape[0],        # row slice in canvas
-             col_offset : col_offset + phase_crop.shape[1]] = phase_crop  # column slice in canvas
+    row_slice = slice(row_offset, row_offset + phase_crop.shape[0])  # row slice in canvas
+    col_slice = slice(col_offset, col_offset + phase_crop.shape[1])  # column slice in canvas
+    phase_3d[k, row_slice, col_slice]      = phase_crop       # time index for this granule
+    coherence_3d[k, row_slice, col_slice]  = coherence_crop
+    incidence_3d[k, row_slice, col_slice]  = incidence_crop
     print(f"  [{k+1}] placed at offset ({row_offset}, {col_offset}), "
           f"crop {phase_crop.shape}, date {dates[k]}")             # confirm placement
 
@@ -262,3 +365,24 @@ print(f"Acquisition dates       : {dates}")                                     
 print(f"Longitude range         : {lons.min():.6f} → {lons.max():.6f}  ({lons.shape[1]} cols)")  # spatial extent
 print(f"Latitude  range         : {lats.min():.6f} → {lats.max():.6f}  ({lats.shape[0]} rows)")  # spatial extent
 print(f"\nFinished. {len(downloaded_paths)} file(s) saved to {output_dir.resolve()}")         # final status
+
+
+# =============================================================================
+# Persist the stack
+# Save the finished stack (and everything process_displacement.py needs to
+# turn it into displacement products) to a single HDF5 file.
+# =============================================================================
+save_stack(
+    STACK_OUTPUT_PATH,
+    phase_3d=phase_3d,
+    coherence_3d=coherence_3d,
+    incidence_3d=incidence_3d,
+    dates=dates,
+    baselines_days=baselines_days,
+    canvas_x=canvas_x,
+    canvas_y=canvas_y,
+    dx=dx,
+    dy=dy,
+    epsg=epsg_stored,
+    wavelength_m=wavelength_m,
+)
