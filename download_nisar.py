@@ -11,6 +11,7 @@ import numpy as np                               # array operations and stacking
 import h5py                                      # HDF5 file reader for NISAR data
 import pyproj                                    # coordinate reference system transformations
 from scipy.interpolate import RegularGridInterpolator  # coarse-grid → full-res incidence angle interpolation
+from scipy.ndimage import distance_transform_edt       # distance-to-nearest-invalid-pixel, for edge masking
 import earthaccess                               # NASA Earthdata download client
 from search_nisar import search_nisar_granules   # CMR search function from search_nisar.py
 
@@ -29,6 +30,28 @@ def download(granule, output_dir):
         local_path=str(output_dir),              # destination directory as a string
     )
     return [pathlib.Path(p) for p in local_files]  # normalise to Path objects before returning
+
+
+# =============================================================================
+# Frame edge masking
+# NISAR GUNW granules are geocoded onto a rectangular grid, but the actual
+# imaged swath is a rotated parallelogram within that rectangle — most of the
+# grid outside the swath is NaN. Frames along a track overlap, and the least
+# reliable pixels are the ones nearest the true swath boundary, so a fixed
+# rectangular border trimmed from the grid's rectangle would barely touch the
+# swath itself. Instead this measures each valid pixel's Euclidean distance
+# (in pixels) to the nearest invalid/exterior pixel, and nulls the pixels
+# closest to that boundary until their combined area is area_fraction of the
+# frame's total valid area — following the swath's true shape, corners
+# included, regardless of how a given search bbox happens to crop it.
+# =============================================================================
+def frame_edge_keep_mask(valid, area_fraction):
+    """Boolean mask (True = keep) over a full-frame validity mask, nulling the area_fraction of valid pixels nearest the frame's true edge."""
+    if area_fraction <= 0:
+        return valid.copy()                                        # nothing to mask
+    distance  = distance_transform_edt(valid)                       # px distance from each valid pixel to the nearest invalid pixel
+    threshold = np.percentile(distance[valid], 100 * area_fraction)  # distance below which area_fraction of the valid area falls
+    return valid & (distance > threshold)                            # False for the outermost area_fraction of the frame
 
 
 # =============================================================================
@@ -59,15 +82,52 @@ def save_stack(path, phase_3d, coherence_3d, incidence_3d, dates, baselines_days
 # Parameters
 # Edit these values to change the search region, product, or date window.
 # =============================================================================
+# # Toolik Lake
+# SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+# LAT_MIN    = 68.6000            # southern boundary — Brooks Range, Alaska
+# LAT_MAX    = 69.0000              # northern boundary — Brooks Range, Alaska
+# LON_MIN    = -149.7047             # western boundary — Brooks Range, Alaska
+# LON_MAX    = -149.0000            # eastern boundary — Brooks Range, Alaska
+# DATE_START = "2026-06-01"           # start of search window
+# DATE_END   = "2026-08-01"           # end of search window
+# COUNT      = 100                     # cap at 50 results for a quick test run
+# ORBIT_DIRECTION = 'ascending'              # 'ascending', 'descending', or None for both
+
+# Site 05
 SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
-LAT_MIN    = 68.6000            # southern boundary — Brooks Range, Alaska
-LAT_MAX    = 69.0000              # northern boundary — Brooks Range, Alaska
-LON_MIN    = -149.7047             # western boundary — Brooks Range, Alaska
-LON_MAX    = -149.0000            # eastern boundary — Brooks Range, Alaska
+LAT_MIN    = 65.55         # southern boundary — Brooks Range, Alaska
+LAT_MAX    = 66.0             # northern boundary — Brooks Range, Alaska
+LON_MIN    = -150.0           # western boundary — Brooks Range, Alaska
+LON_MAX    = -149.0          # eastern boundary — Brooks Range, Alaska
 DATE_START = "2026-06-01"           # start of search window
 DATE_END   = "2026-08-01"           # end of search window
 COUNT      = 100                     # cap at 50 results for a quick test run
 ORBIT_DIRECTION = 'ascending'              # 'ascending', 'descending', or None for both
+
+EDGE_MASK_FRACTION = 0.10  # fraction of each frame's valid-data area to null out nearest its true swath edge (mitigates overlap discontinuities)
+
+# # Site 15
+# SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+# LAT_MIN    = 69.359601        # southern boundary — Brooks Range, Alaska
+# LAT_MAX    = 69.794874            # northern boundary — Brooks Range, Alaska
+# LON_MIN    = -149.138111          # western boundary — Brooks Range, Alaska
+# LON_MAX    = -148.174568         # eastern boundary — Brooks Range, Alaska
+# DATE_START = "2026-06-01"           # start of search window
+# DATE_END   = "2026-08-01"           # end of search window
+# COUNT      = 100                     # cap at 50 results for a quick test run
+# ORBIT_DIRECTION = 'ascending' 
+
+# # Yukon
+# SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+# LAT_MIN    = 66.05        # southern boundary — Brooks Range, Alaska
+# LAT_MAX    = 66.996237           # northern boundary — Brooks Range, Alaska
+# LON_MIN    = -151.000000          # western boundary — Brooks Range, Alaska
+# LON_MAX    = -149.847660         # eastern boundary — Brooks Range, Alaska
+# DATE_START = "2026-06-01"           # start of search window
+# DATE_END   = "2026-08-01"           # end of search window
+# COUNT      = 100                     # cap at 50 results for a quick test run
+# ORBIT_DIRECTION = 'ascending' 
+
 
 LOCAL_PATH  = "./data"                  # local directory for downloaded files
 STACK_OUTPUT_PATH = "./data/timeseries_stack.h5"  # intermediate stack file for process_displacement.py
@@ -223,13 +283,27 @@ for i, granule in enumerate(granules):  # one granule per iteration
         row_start = int(row_indices[0])       # first row of the cropped region
         row_end   = int(row_indices[-1]) + 1  # one past the last row (exclusive)
 
-        # --- read only the cropped phase and coherence slices from disk ------
+        # --- read the full-frame coherence array once ------------------------
+        # Needed in full both for the coherence crop below and to locate this
+        # frame's true valid-data footprint (NaN outside the imaged swath) for
+        # edge masking — the swath boundary can lie anywhere relative to the
+        # bbox crop, so it can't be determined from the crop alone.
+        full_coherence = hf[COHERENCE_PATH][:]           # 2D float array (0-1), NaN outside the swath
+        frame_valid    = ~np.isnan(full_coherence)        # True where this frame actually has data
+        frame_keep     = frame_edge_keep_mask(frame_valid, EDGE_MASK_FRACTION)  # nulls the outer edge of the swath
+        keep_crop      = frame_keep[row_start:row_end, col_start:col_end]       # same window as the crop below
+
+        # --- read only the cropped phase slice from disk ---------------------
         # h5py slice indexing reads only the selected rectangle; the full
-        # raster is never loaded into memory.
+        # phase raster is never loaded into memory.
         phase_crop      = hf[PHASE_PATH][row_start:row_end, col_start:col_end]       # 2D float array (radians)
         phase_crop      = phase_crop.astype(np.float32)                             # consistent dtype across files
-        coherence_crop  = hf[COHERENCE_PATH][row_start:row_end, col_start:col_end]   # 2D float array (0-1)
+        coherence_crop  = full_coherence[row_start:row_end, col_start:col_end]       # 2D float array (0-1)
         coherence_crop  = coherence_crop.astype(np.float32)                         # consistent dtype across files
+
+        # --- null out this frame's edge before it can reach the stack --------
+        phase_crop[~keep_crop]     = np.nan
+        coherence_crop[~keep_crop] = np.nan
 
         # -------------------------------------------------------------------------
         # Incidence angle crop — interpolated from the coarse radarGrid geometry
@@ -253,6 +327,7 @@ for i, granule in enumerate(granules):  # one granule per iteration
             y_coords[row_start:row_end], x_coords[col_start:col_end], indexing="ij"
         )
         incidence_crop = incidence_interp((crop_y_mesh, crop_x_mesh)).astype(np.float32)  # (rows, cols) degrees
+        incidence_crop[~keep_crop] = np.nan  # apply the same frame-edge mask as phase/coherence
 
         # --- capture pixel spacing, transformer, CRS, and wavelength from first valid granule --
         # dx / dy, tf_to_geo, the EPSG code, and the radar wavelength are identical
@@ -270,8 +345,10 @@ for i, granule in enumerate(granules):  # one granule per iteration
         x_start = float(x_coords[col_start])  # easting of the crop's first column
         y_start = float(y_coords[row_start])  # northing of the crop's first row
         crop_items.append((phase_crop, coherence_crop, incidence_crop, x_start, y_start))  # store for canvas assembly after loop
+        n_valid_crop = int(np.count_nonzero(~np.isnan(coherence_crop)))  # valid pixels remaining in this crop after edge masking
         print(f"  Crop extracted: {phase_crop.shape}, "
-              f"x={x_start:.0f}, y={y_start:.0f}")         # log crop size and projected origin
+              f"x={x_start:.0f}, y={y_start:.0f}, "
+              f"{n_valid_crop} valid px after {EDGE_MASK_FRACTION:.0%} frame-edge mask")  # log crop size, origin, and edge mask
 
     # --- extract reference and secondary acquisition dates from filename -----
     # NISAR GUNW filenames contain four YYYYMMDDTHHMMSS datetime strings:

@@ -144,28 +144,62 @@ def search_nisar_granules(
 if __name__ == "__main__":
 
     # --- test parameters -------------------------------------------------------
-    #TEST_SHORT_NAME = "NISAR_L2_GUNW_BETA_V1"  # NISAR Level-2 Geocoded Unwrapped Interferogram (Beta V1)
-    TEST_SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
-    TEST_LAT_MIN    = 68.6515            # southern boundary — Brooks Range, Alaska
-    TEST_LAT_MAX    = 68.6542              # northern boundary — Brooks Range, Alaska
-    TEST_LON_MIN    = -149.6247             # western boundary — Brooks Range, Alaska
-    TEST_LON_MAX    = -149.5438            # eastern boundary — Brooks Range, Alaska
-    TEST_DATE_START = "2026-06-01"           # start of search window
-    TEST_DATE_END   = "2026-08-01"           # end of search window
-    TEST_COUNT      = 100                     # cap at 50 results for a quick test run
-    TEST_ORBIT_DIRECTION = 'ascending'              # 'ascending', 'descending', or None for both
+    # # Toolik Lake Test Set
+    # SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+    # LAT_MIN    = 68.6515            # southern boundary — Brooks Range, Alaska
+    # LAT_MAX    = 68.6542              # northern boundary — Brooks Range, Alaska
+    # LON_MIN    = -149.6247             # western boundary — Brooks Range, Alaska
+    # LON_MAX    = -149.5438            # eastern boundary — Brooks Range, Alaska
+    # DATE_START = "2026-06-01"           # start of search window
+    # DATE_END   = "2026-08-01"           # end of search window
+    # COUNT      = 100                     # cap at 50 results for a quick test run
+    # ORBIT_DIRECTION = 'ascending'              # 'ascending', 'descending', or None for both
+
+    # # Site 05
+    # SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+    # LAT_MIN    = 65.7         # southern boundary — Brooks Range, Alaska
+    # LAT_MAX    = 66.0             # northern boundary — Brooks Range, Alaska
+    # LON_MIN    = -150.0           # western boundary — Brooks Range, Alaska
+    # LON_MAX    = -149.0          # eastern boundary — Brooks Range, Alaska
+    # DATE_START = "2026-06-01"           # start of search window
+    # DATE_END   = "2026-08-01"           # end of search window
+    # COUNT      = 100                     # cap at 50 results for a quick test run
+    # ORBIT_DIRECTION = 'ascending'              # 'ascending', 'descending', or None for both
+
+    # # Site 15
+    # SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+    # LAT_MIN    = 69.359601        # southern boundary — Brooks Range, Alaska
+    # LAT_MAX    = 69.794874            # northern boundary — Brooks Range, Alaska
+    # LON_MIN    = -149.138111          # western boundary — Brooks Range, Alaska
+    # LON_MAX    = -148.174568         # eastern boundary — Brooks Range, Alaska
+    # DATE_START = "2026-06-01"           # start of search window
+    # DATE_END   = "2026-08-01"           # end of search window
+    # COUNT      = 100                     # cap at 50 results for a quick test run
+    # ORBIT_DIRECTION = 'ascending' 
+    
+    # Yukon
+    SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+    LAT_MIN    = 66.05        # southern boundary — Brooks Range, Alaska
+    LAT_MAX    = 66.996237           # northern boundary — Brooks Range, Alaska
+    LON_MIN    = -151.000000          # western boundary — Brooks Range, Alaska
+    LON_MAX    = -149.847660         # eastern boundary — Brooks Range, Alaska
+    DATE_START = "2026-06-01"           # start of search window
+    DATE_END   = "2026-08-01"           # end of search window
+    COUNT      = 100                     # cap at 50 results for a quick test run
+    ORBIT_DIRECTION = 'ascending' 
+
 
     # --- execute search --------------------------------------------------------
     results = search_nisar_granules(    # call the search function with test parameters
-        short_name  = TEST_SHORT_NAME,  # NISAR collection to query
-        lat_min     = TEST_LAT_MIN,     # southern edge of the region of interest
-        lat_max     = TEST_LAT_MAX,     # northern edge of the region of interest
-        lon_min     = TEST_LON_MIN,     # western edge of the region of interest
-        lon_max     = TEST_LON_MAX,     # eastern edge of the region of interest
-        date_start  = TEST_DATE_START,  # beginning of the temporal window
-        date_end    = TEST_DATE_END,    # end of the temporal window
-        count       = TEST_COUNT,       # maximum granules to return
-        orbit_direction = TEST_ORBIT_DIRECTION,  # 'ascending', 'descending', or None
+        short_name  = SHORT_NAME,  # NISAR collection to query
+        lat_min     = LAT_MIN,     # southern edge of the region of interest
+        lat_max     = LAT_MAX,     # northern edge of the region of interest
+        lon_min     = LON_MIN,     # western edge of the region of interest
+        lon_max     = LON_MAX,     # eastern edge of the region of interest
+        date_start  = DATE_START,  # beginning of the temporal window
+        date_end    = DATE_END,    # end of the temporal window
+        count       = COUNT,       # maximum granules to return
+        orbit_direction = ORBIT_DIRECTION,  # 'ascending', 'descending', or None
     )
     # `results` is now a list of DataGranule objects; inspect in Spyder or
     # print individual metadata with: results[0].umm  (full CMR UMM-G record)
