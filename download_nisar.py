@@ -93,16 +93,16 @@ def save_stack(path, phase_3d, coherence_3d, incidence_3d, dates, baselines_days
 # COUNT      = 100                     # cap at 50 results for a quick test run
 # ORBIT_DIRECTION = 'ascending'              # 'ascending', 'descending', or None for both
 
-# Site 05
-SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
-LAT_MIN    = 65.55         # southern boundary — Brooks Range, Alaska
-LAT_MAX    = 66.0             # northern boundary — Brooks Range, Alaska
-LON_MIN    = -150.0           # western boundary — Brooks Range, Alaska
-LON_MAX    = -149.0          # eastern boundary — Brooks Range, Alaska
-DATE_START = "2026-06-01"           # start of search window
-DATE_END   = "2026-08-01"           # end of search window
-COUNT      = 100                     # cap at 50 results for a quick test run
-ORBIT_DIRECTION = 'ascending'              # 'ascending', 'descending', or None for both
+# # Site 05
+# SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+# LAT_MIN    = 65.55         # southern boundary — Brooks Range, Alaska
+# LAT_MAX    = 66.0             # northern boundary — Brooks Range, Alaska
+# LON_MIN    = -150.0           # western boundary — Brooks Range, Alaska
+# LON_MAX    = -149.0          # eastern boundary — Brooks Range, Alaska
+# DATE_START = "2026-06-01"           # start of search window
+# DATE_END   = "2026-08-01"           # end of search window
+# COUNT      = 100                     # cap at 50 results for a quick test run
+# ORBIT_DIRECTION = 'ascending'              # 'ascending', 'descending', or None for both
 
 EDGE_MASK_FRACTION = 0.10  # fraction of each frame's valid-data area to null out nearest its true swath edge (mitigates overlap discontinuities)
 
@@ -127,6 +127,17 @@ EDGE_MASK_FRACTION = 0.10  # fraction of each frame's valid-data area to null ou
 # DATE_END   = "2026-08-01"           # end of search window
 # COUNT      = 100                     # cap at 50 results for a quick test run
 # ORBIT_DIRECTION = 'ascending' 
+
+# Steese
+SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+LAT_MIN    = 65.094274            # southern boundary — Brooks Range, Alaska
+LAT_MAX    = 65.664148           # northern boundary — Brooks Range, Alaska
+LON_MIN    = -146.0          # western boundary — Brooks Range, Alaska
+LON_MAX    = -145.0         # eastern boundary — Brooks Range, Alaska
+DATE_START = "2026-06-01"           # start of search window
+DATE_END   = "2026-08-01"           # end of search window
+COUNT      = 100                     # cap at 50 results for a quick test run
+ORBIT_DIRECTION = 'ascending' 
 
 
 LOCAL_PATH  = "./data"                  # local directory for downloaded files

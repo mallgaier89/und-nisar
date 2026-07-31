@@ -177,16 +177,28 @@ if __name__ == "__main__":
     # COUNT      = 100                     # cap at 50 results for a quick test run
     # ORBIT_DIRECTION = 'ascending' 
     
-    # Yukon
+    # # Yukon
+    # SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+    # LAT_MIN    = 66.05        # southern boundary — Brooks Range, Alaska
+    # LAT_MAX    = 66.996237           # northern boundary — Brooks Range, Alaska
+    # LON_MIN    = -151.000000          # western boundary — Brooks Range, Alaska
+    # LON_MAX    = -149.847660         # eastern boundary — Brooks Range, Alaska
+    # DATE_START = "2026-06-01"           # start of search window
+    # DATE_END   = "2026-08-01"           # end of search window
+    # COUNT      = 100                     # cap at 50 results for a quick test run
+    # ORBIT_DIRECTION = 'ascending' 
+   
+    # Steese
     SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
-    LAT_MIN    = 66.05        # southern boundary — Brooks Range, Alaska
-    LAT_MAX    = 66.996237           # northern boundary — Brooks Range, Alaska
-    LON_MIN    = -151.000000          # western boundary — Brooks Range, Alaska
-    LON_MAX    = -149.847660         # eastern boundary — Brooks Range, Alaska
+    LAT_MIN    = 65.094274            # southern boundary — Brooks Range, Alaska
+    LAT_MAX    = 65.664148           # northern boundary — Brooks Range, Alaska
+    LON_MIN    = -146.0          # western boundary — Brooks Range, Alaska
+    LON_MAX    = -145.0         # eastern boundary — Brooks Range, Alaska
     DATE_START = "2026-06-01"           # start of search window
     DATE_END   = "2026-08-01"           # end of search window
     COUNT      = 100                     # cap at 50 results for a quick test run
     ORBIT_DIRECTION = 'ascending' 
+
 
 
     # --- execute search --------------------------------------------------------

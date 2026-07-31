@@ -17,12 +17,22 @@ from matplotlib.colors import TwoSlopeNorm  # zero-centered color scale for the 
 # Parameters
 # Edit these values to change input/output paths or the masking/sign settings.
 # =============================================================================
-STACK_PATH             = "./data/timeseries_stack.h5"                    # intermediate stack written by download_nisar.py
-RATE_OUTPUT_PATH       = "./data/rate_vertical_mm_per_year.tif"          # output: mean vertical displacement rate
-DISTORTION_OUTPUT_PATH = "./data/angular_distortion_mm_per_yr_per_m.tif"  # output: angular distortion of the rate field
-FIGURE_OUTPUT_PATH     = "./data/displacement_summary.png"               # output: quick-look figure of both maps
-COHERENCE_MIN          = 0.15   # pixels below this coherence magnitude are masked out before rate estimation
-SIGN_CONVENTION        = -1.0  # +1.0 or -1.0 — flip if vertical rate sign disagrees with a known reference deformation
+STACK_PATH                      = "./data/timeseries_stack.h5"                             # intermediate stack written by download_nisar.py
+RATE_OUTPUT_PATH                = "./data/rate_vertical_mm_per_year.tif"                   # output: mean vertical displacement rate (unfiltered)
+RATE_FILTERED_OUTPUT_PATH       = "./data/rate_vertical_mm_per_year_filtered.tif"           # output: mean vertical displacement rate (epoch-count filtered)
+DISTORTION_OUTPUT_PATH          = "./data/angular_distortion_mm_per_yr_per_m.tif"           # output: angular distortion of the rate field (unfiltered)
+DISTORTION_FILTERED_OUTPUT_PATH = "./data/angular_distortion_mm_per_yr_per_m_filtered.tif"  # output: angular distortion of the rate field (epoch-count filtered)
+FIGURE_OUTPUT_PATH              = "./data/displacement_summary.png"                        # output: quick-look figure of both filtered maps
+COHERENCE_MIN                   = 0.15   # pixels below this coherence magnitude are masked out before rate estimation
+MIN_VALID_EPOCHS                = 2      # pixels with fewer valid epochs than this are masked out of the *_filtered outputs
+SIGN_CONVENTION                 = -1.0  # +1.0 or -1.0 — flip if vertical rate sign disagrees with a known reference deformation
+FIT_INTERCEPT                   = False  # True: per-pixel intercept+slope fit — each pixel absorbs its own average
+                                         #   per-pair phase offset instead of it contaminating the rate. Use for
+                                         #   current uncalibrated/provisional data (see LIMITATIONS.md).
+                                         # False: original Sandwell & Price stacking, slope forced through the
+                                         #   origin (no intercept) — only valid once each pair's phase is properly
+                                         #   reference-calibrated so a zero-baseline pair truly has zero phase. Use
+                                         #   once future validated/calibrated NISAR data are available.
 
 
 # =============================================================================
@@ -73,18 +83,36 @@ displacement_vertical = displacement_los / np.cos(np.radians(incidence_3d))     
 
 
 # =============================================================================
-# Per-pixel rate via InSAR stacking (Sandwell & Price, 1998)
-# Weighted least-squares slope through the origin using each pair's own
-# temporal baseline as the independent variable. Appropriate here because the
-# granules form a simple chain of independent interferogram pairs rather than
-# an overlapping network that would need a full SBAS-style inversion.
+# Per-pixel rate via InSAR stacking (Sandwell & Price, 1998), or per-pixel
+# intercept+slope OLS if FIT_INTERCEPT is set — see the parameter comment
+# above. Each pair's own temporal baseline is the independent variable, and
+# each pair is treated independently: a simple chain of pairs rather than an
+# overlapping network that would need a full SBAS-style inversion.
 # =============================================================================
 valid        = ~np.isnan(displacement_vertical)               # per-pixel, per-layer validity mask
 baseline_col = baselines_days[:, None, None]                  # broadcast baseline over rows/cols
-num = np.nansum(baseline_col * displacement_vertical, axis=0)  # sum(baseline * displacement), NaN-safe
-den = np.sum(np.where(valid, baseline_col ** 2, 0.0), axis=0)  # sum(baseline^2) over valid layers only
-with np.errstate(invalid="ignore", divide="ignore"):
-    rate_m_per_day = np.where(den > 0, num / den, np.nan)      # weighted-LS slope (meters/day)
+
+if FIT_INTERCEPT:
+    # Unweighted OLS for displacement = intercept + rate * baseline. With an
+    # intercept free to absorb each pixel's average phase offset, there's no
+    # remaining physical argument for baseline-proportional weighting.
+    t = np.where(valid, baseline_col, 0.0)          # baseline, zeroed where masked
+    d = np.where(valid, displacement_vertical, 0.0)  # displacement, zeroed where masked
+    n = valid.sum(axis=0).astype(float)              # per-pixel valid epoch count
+    sum_t, sum_d   = t.sum(axis=0), d.sum(axis=0)
+    sum_tt, sum_td = (t * t).sum(axis=0), (t * d).sum(axis=0)
+    denom = n * sum_tt - sum_t ** 2  # 0 when n<2 or all valid baselines are identical
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rate_m_per_day = np.where(denom > 0, (n * sum_td - sum_t * sum_d) / denom, np.nan)  # OLS slope (meters/day)
+        intercept_m    = np.where(denom > 0, (sum_d - rate_m_per_day * sum_t) / n, np.nan)  # OLS intercept (meters)
+    print(f"Intercept+slope fit: intercept mean {np.nanmean(intercept_m) * 1000:.2f} mm "
+          f"(min {np.nanmin(intercept_m) * 1000:.1f}, max {np.nanmax(intercept_m) * 1000:.1f})")
+else:
+    num = np.nansum(baseline_col * displacement_vertical, axis=0)  # sum(baseline * displacement), NaN-safe
+    den = np.sum(np.where(valid, baseline_col ** 2, 0.0), axis=0)  # sum(baseline^2) over valid layers only
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rate_m_per_day = np.where(den > 0, num / den, np.nan)      # origin-forced weighted-LS slope (meters/day)
+
 rate_mm_per_year = rate_m_per_day * 365.25 * 1000.0             # convert to mm/year
 
 print(f"Rate map: {np.nanmin(rate_mm_per_year):.1f} to {np.nanmax(rate_mm_per_year):.1f} mm/yr "
@@ -92,13 +120,42 @@ print(f"Rate map: {np.nanmin(rate_mm_per_year):.1f} to {np.nanmax(rate_mm_per_ye
 
 
 # =============================================================================
+# Minimum-epoch-count safeguard
+# The fit above is solvable with very few valid observations (1 for the
+# origin-forced fit, 2 for the intercept+slope fit) and has no way to flag a
+# noisy or unrepresentative pixel on its own at that point count. Pixels with
+# fewer than MIN_VALID_EPOCHS surviving the coherence mask are excluded from
+# the *_filtered outputs; the unfiltered outputs above are kept as-is for
+# full spatial coverage.
+# =============================================================================
+n_valid_epochs = valid.sum(axis=0)  # per-pixel count of coherence-surviving epochs
+
+epoch_mask = n_valid_epochs >= MIN_VALID_EPOCHS
+n_masked = np.count_nonzero(~epoch_mask)
+n_pixels = n_valid_epochs.size
+print(f"Epoch-count mask (>= {MIN_VALID_EPOCHS} valid epochs): dropped {n_masked}/{n_pixels} pixels "
+      f"({100 * n_masked / n_pixels:.1f}%) from filtered outputs")
+
+rate_mm_per_year_filtered = np.where(epoch_mask, rate_mm_per_year, np.nan)
+
+
+# =============================================================================
 # Angular distortion — spatial gradient of the rate map between neighboring
 # pixels, a standard differential-settlement metric for infrastructure risk.
+# Computed once from the unfiltered rate map and once from the filtered rate
+# map; np.gradient naturally propagates NaN into any distortion pixel whose
+# finite-difference computation touches a masked rate neighbor.
 # =============================================================================
-drate_drow, drate_dcol = np.gradient(rate_mm_per_year, abs(dy), abs(dx))  # mm/yr per meter, along each array axis
-if dy < 0:                       # canvas_y decreases with increasing row index
-    drate_drow = -drate_drow     # flip so the gradient points toward increasing northing
-angular_distortion = np.hypot(drate_dcol, drate_drow)  # combined horizontal-plane gradient magnitude (mm/yr per m)
+def compute_angular_distortion(rate_map):
+    """Spatial gradient magnitude of a rate map, in mm/yr per meter."""
+    drate_drow, drate_dcol = np.gradient(rate_map, abs(dy), abs(dx))  # mm/yr per meter, along each array axis
+    if dy < 0:                       # canvas_y decreases with increasing row index
+        drate_drow = -drate_drow     # flip so the gradient points toward increasing northing
+    return np.hypot(drate_dcol, drate_drow)  # combined horizontal-plane gradient magnitude (mm/yr per m)
+
+
+angular_distortion = compute_angular_distortion(rate_mm_per_year)
+angular_distortion_filtered = compute_angular_distortion(rate_mm_per_year_filtered)
 
 print(f"Angular distortion: max {np.nanmax(angular_distortion):.4f} mm/yr per m "
       f"(mean {np.nanmean(angular_distortion):.4f})")
@@ -125,37 +182,41 @@ def write_geotiff(path, array):
 
 
 write_geotiff(RATE_OUTPUT_PATH, rate_mm_per_year)
+write_geotiff(RATE_FILTERED_OUTPUT_PATH, rate_mm_per_year_filtered)
 write_geotiff(DISTORTION_OUTPUT_PATH, angular_distortion)
+write_geotiff(DISTORTION_FILTERED_OUTPUT_PATH, angular_distortion_filtered)
 
 
 # =============================================================================
 # Visualization
-# Quick-look figure of both maps side by side: a diverging blue/red scale
-# centered on zero for the signed rate map, and a single-hue sequential scale
-# for the (always non-negative) angular distortion magnitude.
+# Quick-look figure of both filtered maps side by side (epoch-count mask
+# applied): a diverging blue/red scale centered on zero for the signed rate
+# map, and a single-hue sequential scale for the (always non-negative)
+# angular distortion magnitude. Unfiltered coverage remains available in the
+# unfiltered GeoTIFFs written above.
 # =============================================================================
 extent = [                                       # corner-based extent for imshow (canvas_x/y hold pixel centers)
     canvas_x[0] - dx / 2, canvas_x[-1] + dx / 2,  # left, right
     canvas_y[-1] + dy / 2, canvas_y[0] - dy / 2,  # bottom, top
 ]
 
-rate_limit = np.nanmax(np.abs(rate_mm_per_year))                     # symmetric limits so zero sits at the midpoint
+rate_limit = np.nanmax(np.abs(rate_mm_per_year_filtered))            # symmetric limits so zero sits at the midpoint
 rate_norm  = TwoSlopeNorm(vmin=-rate_limit, vcenter=0.0, vmax=rate_limit)
 
-distortion_limit = np.nanpercentile(angular_distortion, 98)          # clip a few outlier pixels for display only
+distortion_limit = np.nanpercentile(angular_distortion_filtered, 98)  # clip a few outlier pixels for display only
 print(f"Angular distortion color scale clipped at the 98th percentile "
       f"({distortion_limit:.4f} mm/yr per m) for display — underlying GeoTIFF is unclipped.")
 
 fig, (ax_rate, ax_distortion) = plt.subplots(1, 2, figsize=(13, 5.5), constrained_layout=True)
 
-im_rate = ax_rate.imshow(rate_mm_per_year, extent=extent, origin="upper", cmap="RdBu_r", vmin=-2000, vmax=2000)
+im_rate = ax_rate.imshow(rate_mm_per_year_filtered, extent=extent, origin="upper", cmap="RdBu_r", vmin=-2000, vmax=2000)
 ax_rate.set_title("Mean vertical displacement rate")
 ax_rate.set_xlabel("Easting (m)")
 ax_rate.set_ylabel("Northing (m)")
 fig.colorbar(im_rate, ax=ax_rate, label="mm/yr", shrink=0.85)
 
 
-im_distortion = ax_distortion.imshow(1e-3**angular_distortion, extent=extent, origin="upper", cmap="Blues",
+im_distortion = ax_distortion.imshow(1e-3*angular_distortion_filtered, extent=extent, origin="upper", cmap="Blues",
                                       vmin=0.0, vmax=1e-3*distortion_limit)
 ax_distortion.set_title("Angular distortion")
 ax_distortion.set_xlabel("Easting (m)")
