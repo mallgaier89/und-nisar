@@ -125,6 +125,138 @@ group/dataset tree (paths, shapes, dtypes, attributes). Use it to confirm or
 update the hardcoded HDF5 dataset paths in `download_nisar.py` when a new
 NISAR product version changes its internal layout.
 
+## Proposal figures: NISAR vs. ICESat-2 sampling
+
+These scripts produce figures that contrast how NISAR and ICESat-2 sample the
+ground, spatially and in time, for two proposal applications:
+
+- permafrost at Toolik, Alaska (`plot_sampling_toolik.py`);
+- the Greenland ice sheet east of Point 660 (`plot_sampling_greenland.py`).
+
+They are independent of the displacement pipeline above. Code they share
+lives in `sampling_common.py`: the cached CMR search, the DEM hillshade
+basemap, NISAR footprint and date parsing, the nominal NISAR/ICESat-2
+schedules, and the track, frame and timeline drawing.
+
+### `icesat2_tracks.py` — ICESat-2 nominal ground-track helpers
+
+Reads the official per-cycle Reference Ground Track archive
+(`IS2_RGTs_cycle<N>_date_time.zip` from the
+[ICESat-2 technical specs page](https://icesat-2.gsfc.nasa.gov/science/specs);
+cycle 32, Jun–Sep 2026, cached in `data/icesat2_rgt/`). Each RGT's KML line
+has one vertex per second of flight, so every vertex carries an exact nominal
+time. The module provides passes through an area of interest, projection to a
+map CRS, the six beam ground tracks (3 pairs ~3.3 km apart, beams 90 m apart
+within a pair), ascending × descending crossovers, the nearest point on a
+track to a site, and pass dates under the 91-day exact repeat. Run it directly
+for a self-check at Toolik. The nearest nominal RGTs (0327 asc, 0213 desc)
+match the RGTs of the real ATL06 granules over Toolik in CMR.
+
+### `plot_sampling_toolik.py` — sampling map and timeline
+
+Writes `data/Toolik sampling_map.{png,pdf}` and
+`data/Toolik sampling_timeline.{png,pdf}`:
+
+- **Sample point**: the ICESat-2 ascending × descending crossover inside the
+  displacement map nearest the site centre (at Toolik, RGT 0769 × 1097).
+- **Map**: the extent of the Toolik displacement map
+  (`process_displacement.py` output) plus a 20 km margin. It is drawn
+  north-up, in an azimuthal equidistant projection centred on the site, with
+  axes in km east/north of the site centre. The NISAR GUNW grid (EPSG:3413)
+  is not north-up in Alaska: at Toolik, true north points ~104° clockwise
+  from its "up". The basemap is a
+  hillshade of the Copernicus GLO-90 DEM: public AWS open data, with tiles
+  cached in `data/basemap/` and the required attribution printed under the
+  figure. On top it shows:
+  - the border of each NISAR frame overlapping the map, drawn from its CMR
+    granule footprint (solid for ascending, dashed for descending) and
+    labelled `track+direction-frame`;
+  - all six ICESat-2 nominal beam tracks (thick: centre pair on the RGT;
+    thin: outer pairs at ±3.3 km);
+  - the crossovers, with the sample point marked.
+
+  A 1 km zoom panel at the sample point shows the outlines of NISAR's 80 m
+  pixels against both beams of each crossing centre pair and the ATL06
+  segment centres (20 m posting). The pixel grid is taken from the
+  displacement-map GeoTIFF; its values are not shown.
+- **Timeline**: sampling dates at the sample point for each NISAR track
+  covering it (4 at Toolik: 063A, 106A, 073D, 102D) and for all NISAR tracks
+  combined. It also shows the two crossing ICESat-2 RGTs individually and
+  combined. Each row lists its median revisit interval; combined rows also
+  list the longest gap. A panel below shows NISAR acquisitions per month at
+  the sample point: filled bars are acquisitions in the archive, outlined
+  bars the nominal 12-day schedule on the same tracks. Months after the
+  archive's latest acquisition are hatched, so not-yet-processed data isn't
+  read as a seasonal gap.
+
+Filled markers are acquisitions present in the NASA CMR archive (NISAR GUNW
+granules / ATL06 granules). Open markers are the **nominal** schedule: an
+uninterrupted 12-day repeat for NISAR, and the 91-day exact repeat for
+ICESat-2 (nominal pass times taken from the RGT file). At Toolik's latitude
+ICESat-2 points at the RGT rather than off-pointing, so the nominal tracks
+are where data are collected.
+
+CMR metadata is public, so no Earthdata login is needed. Query results are
+cached as JSON in `data/cmr_cache/` and reused while the query parameters
+are unchanged (set `REFRESH_CMR = True` to force a re-query).
+
+### `plot_sampling_greenland.py` — ice-sheet sampling map and timeline
+
+Writes `data/Point660 sampling_map.{png,pdf}` and
+`data/Point660 sampling_timeline.{png,pdf}` for a 10 × 10 km study area on
+the ice sheet. The area is a north-up square whose west edge is at Point 660
+(67.1520°N, 50.0478°W, the end of the road from Kangerlussuaq), centred
+north–south on it.
+
+The comparison is NISAR's 80 m GUNW pixels against the **ATL15** gridded
+height-change products: **1 km cells at 3-month steps** and **2.5 km cells at
+1-month steps** (latest release, 006 at the time of writing). Note that
+**ATL14** is a separate 100 m DEM, not a 1 km grid.
+
+- **Sample point**: an ICESat-2 ascending × descending crossover inside the
+  study area. At this latitude RGT centrelines are too sparse to cross
+  inside 10 km, so the script falls back to crossings of the beam-pair lines
+  (here an outer pair of RGT 0399 × an outer pair of RGT 0224).
+- **Map** (three panels, north-up):
+  - **A, region:** hillshade, ice-sheet margin, NISAR frame borders,
+    ICESat-2 beam tracks, crossovers, the study area.
+  - **B, study area:** ice-sheet margin, NISAR 80 m pixel grid (very thin
+    lines), ATL15 1 km and 2.5 km cell edges
+    plus all six beams.
+  - **C, 1 km zoom at the sample point:** NISAR 80 m pixels, ATL15 cell
+    edges, and both crossing beam pairs with ATL06 segment centres.
+
+  NISAR and ATL15 both use the EPSG:3413 grid, which here is only ~5° off
+  north.
+- **Timeline** (Jun 2025 – Dec 2026):
+  - the NISAR tracks covering the sample point (088A, 160A, 141D) and all
+    NISAR tracks combined;
+  - both crossing ICESat-2 RGTs, separately and combined;
+  - the ATL15 3-month and monthly epochs.
+
+  Filled markers mean the data are in the archive. Open markers are the
+  nominal schedule. NISAR's nominal dates start at science operations
+  (`NISAR_OPS_START`); its archive over this area starts in June 2026.
+
+**Ice-sheet margin.** The margin is the boundary of the GIMP land-ice
+classification mask (Howat et al. 2014; NSIDC-0714 v1.2), 2020 epoch, from
+its 15 m tiles. It is drawn as a dark line, with the ice side lightened.
+The tiles are downloaded once (about 8 MB, Earthdata login) to `data/gimp/`.
+
+**ATL15 grid registration and epoch times.** These are read from the real
+ATL15 files when an Earthdata login is stored: only the `delta_h/x`, `y` and
+`time` variables are streamed with `earthaccess`, and they are cached in
+`data/atl15_grid_meta.json`. For release 006, cell centres sit on whole
+multiples of the cell size in EPSG:3413. Epochs run from 2019.0 in
+quarter-year (3-month product) or monthly steps, up to 2026.5. The
+timeline extends them at the same step as nominal future epochs. Without a
+login the script falls back to the same layout as an assumption and says so
+on both figures. To store a login once:
+
+```
+python -c "import earthaccess; earthaccess.login(persist=True)"
+```
+
 ## Limitations
 
 <!-- Content below is copied verbatim from LIMITATIONS.md; keep the two files in sync. -->
