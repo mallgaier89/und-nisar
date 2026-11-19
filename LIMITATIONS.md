@@ -48,6 +48,12 @@ motion.
    `NISAR_L2_GUNW_PROVISIONAL_V1` — an early, not-yet-validated product from a
    recently launched mission. Orbital, tropospheric, and ionospheric correction
    terms are expected to carry larger residual errors than a validated product.
+   The GUNW tropospheric phase screens are now subtracted by default
+   (`nisar_corrections.py`, see the pipeline description). The ionospheric screen
+   can be applied but is off by default, because it proved unreliable over the
+   Greenland ice sheet (see below). Stacks built before this change are
+   uncorrected; their stack file lacks the `ionosphere_corrected` /
+   `troposphere_corrected` attributes.
 
 ## Why the angular distortion map is less affected
 
@@ -94,7 +100,93 @@ features rather than showing spurious sharp artifacts.
   `connectedComponents` would increase the risk).
 - **Ionospheric scintillation** is a known small-scale L-band artifact source at
   auroral latitudes (northern Alaska sits under/near the auroral oval) and has not
-  been independently verified as absent here.
+  been independently verified as absent here. The GUNW split-spectrum ionosphere
+  screen (available, but off by default) is spatially smoothed, so even when applied
+  it would not remove small-scale scintillation.
+
+## Ionospheric correction over the Greenland ice sheet (GUNW phase screen)
+
+The GUNW product distributes an `ionospherePhaseScreen` (split-spectrum
+estimate) that is not applied to `unwrappedPhase`. `nisar_corrections.py` can
+subtract it. It was tested in `plot_dh_greenland.py` on the Greenland
+comparison: the ATL15 1 km cell at the ICESat-2 crossover east of Point 660,
+referenced to ice-free bedrock ~14 km to the west, over 25 twelve-day pairs on
+tracks 088A, 160A and 141D (June–October 2026). The tropospheric screens were
+applied at the same time.
+
+### Observations
+
+- **Effect on the five pairs valid on the ice.** All five fall in late
+  September–October; the melt-season pairs are masked by coherence.
+  Values are 1 km cell means in the pipeline's "apparent vertical" units
+  (LOS / cos θ):
+
+  | Pair | Uncorrected | Ionosphere + troposphere | Ionosphere, target − reference | Troposphere, target − reference |
+  |---|---|---|---|---|
+  | 088A 12–24 Sep | −36 cm | −65 cm | −29 cm | 0.0 cm |
+  | 088A 24 Sep – 6 Oct | −35 cm | −67 cm | −32 cm | −0.5 cm |
+  | 088A 6–18 Oct | −33 cm | −67 cm | −39 cm | +0.9 cm |
+  | 141D 27 Sep – 9 Oct | +60 cm | +75 cm | +16 cm | −0.6 cm |
+  | 160A 29 Sep – 11 Oct | −82 cm | −104 cm | −22 cm | −0.4 cm |
+
+- **Size of the ionosphere correction.** Over all 25 pairs, the ionosphere
+  correction between the ice target and the bedrock reference has a median
+  magnitude of 39 cm (range −129 to +59 cm). The tropospheric correction is
+  small: median 0.6 cm, at most 1.6 cm.
+- **On stable bedrock.** Subtracting the ionosphere screen reduces the phase
+  scatter compared with adding it in 18 of 25 pairs (median scatter
+  0.72 rad raw, 0.53 rad subtracted, 1.10 rad added), which supports the sign
+  convention. But subtracting it still *increases* the scatter compared with
+  no correction in 9 of 25 pairs.
+- **On the ice.** In every valid pair the ionosphere correction has the same
+  sign as that track's flow-dominated signal: negative on both ascending
+  tracks, positive on the descending track. It therefore widens the
+  ascending/descending disagreement, and leaves the 088A/160A difference
+  (~0.37 m) unchanged.
+
+### Interpretation
+
+- **Implausibly large.** A differential ionospheric delay of tens of
+  centimetres, and more than a metre in one pair, over ~14 km is much larger
+  than is plausible under most conditions. Corrections that consistently
+  track the viewing geometry are also unlikely to be truly ionospheric,
+  because the ionosphere is independent of ice flow.
+- **Likely cause.** The split-spectrum estimate is probably unreliable over
+  the ice:
+  - the sub-band interferograms have even lower coherence than the full-band
+    one (0.03–0.15 on the ice in the melt season, ~0.2–0.4 in the valid
+    pairs), which promotes sub-band unwrapping errors;
+  - the product fills gaps from the nearest valid value and smooths with an
+    iterative Gaussian filter (`ionosphereFilling = nearest`,
+    `ionosphereFiltering = Iterative gaussian filter` in the GUNW metadata),
+    which spreads such errors across the ice margin.
+
+  Motion-related errors leaking into the dispersive estimate on fast-moving
+  ice would explain the sign pattern. That is a hypothesis; it was not tested
+  here.
+- **Not a sign error.** The sign convention is supported both by the ISCE3
+  definition and by the bedrock test.
+
+### Conclusions
+
+- **Ionosphere off, troposphere on.** The ionosphere correction is **off by
+  default** (`APPLY_IONOSPHERE_CORRECTION = False` in `download_nisar.py`
+  and `plot_dh_greenland.py`). The tropospheric correction stays on: it is
+  small and behaves consistently.
+- **Before enabling it again,** test at least one of:
+  - masking the screen with `ionospherePhaseScreenUncertainty` and/or
+    coherence;
+  - estimating the ionosphere only from coherent bedrock and interpolating a
+    smooth surface across the ice;
+  - checking the screen on the higher-coherence Alaska permafrost sites;
+  - re-testing with validated (non-provisional) GUNW data.
+- **What remains uncorrected.** The ionosphere is still a likely error source
+  of centimetres to decimetres per pair, including at the Alaska sites. NISAR
+  results on the ice remain qualitative.
+- **Existing Alaska outputs.** The Alaska stacks and GeoTIFFs produced before
+  this change were not re-processed. They carry no phase-screen corrections
+  (their stack files lack the `ionosphere_corrected` /
+  `troposphere_corrected` attributes).
 
 ## Current status
 

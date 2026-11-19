@@ -20,7 +20,8 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.transforms import Bbox
 from matplotlib.lines import Line2D
-from matplotlib.patches import ConnectionPatch, Patch
+from matplotlib.patches import ConnectionPatch, Patch, PathPatch
+from matplotlib.path import Path
 
 import icesat2_tracks as is2             # ICESat-2 nominal RGT helpers
 import sampling_common as sc             # shared CMR / basemap / drawing helpers
@@ -49,6 +50,11 @@ BASEMAP_DIR        = "./data/basemap"  # cached Copernicus GLO-90 DEM tiles for 
 BASEMAP_RES_M      = 100.0         # hillshade grid spacing on the map (m)
 BASEMAP_Z_FACTOR   = 2.0           # vertical exaggeration of the hillshade (low-relief tundra)
 INSET_HALF_WIDTH_M = 500.0         # zoom panel half-width around the sample point
+NHD_WATERBODY_URL  = "https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer/12"  # USGS NHD Waterbody - Large Scale
+LAKE_MIN_KM2       = 0.05          # smallest lake drawn (km^2); NHD FTYPE 390 = lake/pond, 436 = reservoir
+LAKE_CACHE         = f"./data/nhd/{SITE_NAME}_waterbodies.geojson"
+LAKE_LABEL         = "Toolik Lake"  # NHD GNIS name to label on the map
+C_LAKE_FILL, C_LAKE_EDGE = "#bccfdc", "#5d7c90"  # muted gray-blue: water, kept distinct from NISAR blue
 CMR_CACHE_DIR      = "./data/cmr_cache"
 REFRESH_CMR        = False         # True: re-query CMR even if a cache file exists
 MAP_OUTPUT         = f"./data/{SITE_NAME} sampling_map"       # .png and .pdf are written
@@ -82,6 +88,23 @@ print(f"Rate map {rate.shape} px ({rate_crs}); map lon/lat bbox {np.round(geo_bb
 
 hillshade, hillshade_extent = sc.load_hillshade(geo_bbox, MAP_CRS, left, right, bottom, top, BASEMAP_DIR,
                                                 BASEMAP_RES_M, BASEMAP_Z_FACTOR)
+
+# Lakes: USGS NHD waterbody polygons (lakes/ponds, reservoirs) >= LAKE_MIN_KM2, public ArcGIS service, cached
+lake_features = sc.arcgis_geojson(NHD_WATERBODY_URL, geo_bbox, f"AREASQKM >= {LAKE_MIN_KM2} AND FTYPE IN (390, 436)",
+                                  LAKE_CACHE, out_fields="GNIS_NAME,FTYPE,AREASQKM")
+lakes = [(f["properties"].get("GNIS_NAME"), sc.polygon_path(f["geometry"], to_map)) for f in lake_features]
+print(f"NHD: {len(lakes)} lakes >= {LAKE_MIN_KM2} km^2 over the map")
+
+
+def draw_lakes(ax, scale, box):
+    """Lakes overlapping box = (x0, x1, y0, y1) in map metres, drawn in axes units of `scale` metres."""
+    view = Bbox([[box[0], box[2]], [box[1], box[3]]])
+    for _, path in lakes:
+        if path.intersects_bbox(view):
+            patch = PathPatch(Path(path.vertices * scale, path.codes), facecolor=C_LAKE_FILL, edgecolor=C_LAKE_EDGE,
+                              lw=0.3, zorder=0.5)
+            patch.set_in_layout(False)  # parts outside the axes must not widen the saved figure
+            ax.add_patch(patch)
 
 
 # =============================================================================
@@ -160,6 +183,14 @@ gs = fig.add_gridspec(1, 2, width_ratios=[1.45, 1], wspace=0.08)
 ax = fig.add_subplot(gs[0])
 axz = fig.add_subplot(gs[1])
 sc.draw_hillshade(ax, hillshade, hillshade_extent)
+draw_lakes(ax, km, (left, right, bottom, top))
+for name, path in lakes:  # label the named site lake beside its outline
+    if name == LAKE_LABEL:
+        ax.add_patch(PathPatch(Path(path.vertices * km, path.codes), facecolor=C_LAKE_FILL, edgecolor=INK, lw=0.7,
+                               path_effects=sc.LINE_HALO, zorder=6))  # the labelled lake stays visible above the tracks
+        v = path.vertices
+        ax.annotate(name, (v[:, 0].min() * km, v[:, 1].mean() * km), xytext=(-4, 0), textcoords="offset points",
+                    ha="right", va="center", fontsize=6.5, fontstyle="italic", color=INK, path_effects=HALO, zorder=7)
 covering = sc.draw_frame_borders(ax, frames, left, right, bottom, top, avoid=[(x0, y0)])
 sc.draw_beams(ax, passes)
 
@@ -168,7 +199,7 @@ cy = np.array([c["y"] for c in crossovers]) * km
 ax.scatter(cx, cy, s=12, facecolor="white", edgecolor=INK, lw=0.6, zorder=6)
 ax.scatter([x0 * km], [y0 * km], marker="s", s=80, facecolor="none", edgecolor=INK, lw=1.3, zorder=7,
            path_effects=HALO)
-ax.annotate("sample point", (x0 * km, y0 * km), xytext=(-7, 6), textcoords="offset points", ha="right",
+ax.annotate("sample point", (x0 * km, y0 * km), xytext=(8, -10), textcoords="offset points", ha="left",
             color=INK, fontsize=7, path_effects=HALO, zorder=7)
 if covering:
     ax.text(0.02, 0.02, "Frames covering the whole map: " + ", ".join(covering), transform=ax.transAxes,
@@ -197,6 +228,7 @@ r1, c1 = min(r1 + 1, rate.shape[0]), min(c1 + 1, rate.shape[1])
 corner_x, corner_y = np.meshgrid(rate_tf.c + px * np.arange(c0, c1 + 1), rate_tf.f - px * np.arange(r0, r1 + 1))
 mesh_x, mesh_y = native_to_map.transform(corner_x, corner_y)
 axz.set_facecolor("#eef4fc")  # NISAR pixels: light tint, cell edges on the native 80 m grid
+draw_lakes(axz, 1.0, (zx0, zx1, zy0, zy1))  # any lake inside the zoom box (zoom axes are in metres)
 for j in range(mesh_x.shape[1]):
     axz.plot(mesh_x[:, j], mesh_y[:, j], color=C_NISAR, lw=0.5, alpha=0.7, zorder=1)
 for i in range(mesh_x.shape[0]):
@@ -237,11 +269,12 @@ handles = [Line2D([], [], color=C_IS2_ASC, lw=1.4, label="ICESat-2 asc: centre b
                  label="NISAR frame border, descending"),
            Line2D([], [], ls="", marker="o", mfc="white", mec=INK, ms=4.5, label="RGT crossover"),
            Line2D([], [], ls="", marker="o", mfc=C_IS2_ASC, mec="white", ms=4, label="ATL06 segment (20 m posting)"),
+           Patch(facecolor=C_LAKE_FILL, edgecolor=C_LAKE_EDGE, lw=0.5, label=f"Lake ≥{LAKE_MIN_KM2:g} km² (USGS NHD)"),
            Patch(facecolor="#eef4fc", edgecolor=C_NISAR, lw=0.6, label="NISAR GUNW 80 m pixel")]
 fig.legend(handles=handles, loc="lower center", ncol=2, fontsize=6.8, bbox_to_anchor=(0.5, -0.02))
 fig.text(0.5, -0.07, "Each ICESat-2 line is a beam pair; its 2 beams (90 m apart) overlap at map scale and are "
-         "resolved in the zoom panel. North-up azimuthal equidistant projection centred on the site.\n"
-         + sc.DEM_ATTRIBUTION, ha="center", va="top", fontsize=6.2, color=INK_2)
+         "resolved in the zoom panel.\nNorth-up azimuthal equidistant projection centred on the site. "
+         "Lakes: USGS National Hydrography Dataset (NHD) waterbodies.\n" + sc.DEM_ATTRIBUTION, ha="center", va="top", fontsize=6.2, color=INK_2)
 fig.subplots_adjust(left=0.08, right=0.98, top=0.93, bottom=0.24)
 sc.save_figure(fig, MAP_OUTPUT)
 

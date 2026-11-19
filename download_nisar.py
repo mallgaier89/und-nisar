@@ -14,6 +14,7 @@ from scipy.interpolate import RegularGridInterpolator  # coarse-grid → full-re
 from scipy.ndimage import distance_transform_edt       # distance-to-nearest-invalid-pixel, for edge masking
 import earthaccess                               # NASA Earthdata download client
 from search_nisar import search_nisar_granules   # CMR search function from search_nisar.py
+from nisar_corrections import correct_phase      # GUNW ionospheric / tropospheric phase corrections
 
 C_LIGHT = 299_792_458.0  # speed of light, m/s — used to convert radar center frequency to wavelength
 
@@ -75,6 +76,8 @@ def save_stack(path, phase_3d, coherence_3d, incidence_3d, dates, baselines_days
         hf.attrs["dy"] = dy                                     # northing pixel spacing (meters)
         hf.attrs["epsg"] = epsg                                 # projected CRS EPSG code
         hf.attrs["wavelength_m"] = wavelength_m                 # radar wavelength (meters)
+        hf.attrs["ionosphere_corrected"]  = APPLY_IONOSPHERE_CORRECTION   # phase screens subtracted in this stack
+        hf.attrs["troposphere_corrected"] = APPLY_TROPOSPHERE_CORRECTION
     print(f"Stack saved: {pathlib.Path(path).resolve()}")  # confirm the file landed on disk
 
 
@@ -82,16 +85,16 @@ def save_stack(path, phase_3d, coherence_3d, incidence_3d, dates, baselines_days
 # Parameters
 # Edit these values to change the search region, product, or date window.
 # =============================================================================
-# # Toolik Lake
-# SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
-# LAT_MIN    = 68.6000            # southern boundary — Brooks Range, Alaska
-# LAT_MAX    = 69.0000              # northern boundary — Brooks Range, Alaska
-# LON_MIN    = -149.7047             # western boundary — Brooks Range, Alaska
-# LON_MAX    = -149.0000            # eastern boundary — Brooks Range, Alaska
-# DATE_START = "2026-06-01"           # start of search window
-# DATE_END   = "2026-08-01"           # end of search window
-# COUNT      = 100                     # cap at 50 results for a quick test run
-# ORBIT_DIRECTION = 'ascending'              # 'ascending', 'descending', or None for both
+# Toolik Lake
+SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+LAT_MIN    = 68.6500            # southern boundary — Brooks Range, Alaska
+LAT_MAX    = 68.6542              # northern boundary — Brooks Range, Alaska
+LON_MIN    = -149.6300             # western boundary — Brooks Range, Alaska
+LON_MAX    = -149.5438            # eastern boundary — Brooks Range, Alaska
+DATE_START = "2026-06-01"           # start of search window
+DATE_END   = "2026-08-01"           # end of search window
+COUNT      = 100                     # cap at 50 results for a quick test run
+ORBIT_DIRECTION = 'ascending'              # 'ascending', 'descending', or None for both
 
 # # Site 05
 # SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
@@ -105,6 +108,9 @@ def save_stack(path, phase_3d, coherence_3d, incidence_3d, dates, baselines_days
 # ORBIT_DIRECTION = 'ascending'              # 'ascending', 'descending', or None for both
 
 EDGE_MASK_FRACTION = 0.10  # fraction of each frame's valid-data area to null out nearest its true swath edge (mitigates overlap discontinuities)
+APPLY_IONOSPHERE_CORRECTION  = False  # subtract the GUNW ionospherePhaseScreen (distributed, but not applied, in the product);
+                                      #   off for now: the screen proved unreliable over the Greenland ice sheet (see LIMITATIONS.md)
+APPLY_TROPOSPHERE_CORRECTION = True  # subtract the GUNW wet + hydrostatic tropospheric phase screens (3D cube, at DEM height)
 
 # # Site 15
 # SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
@@ -128,16 +134,16 @@ EDGE_MASK_FRACTION = 0.10  # fraction of each frame's valid-data area to null ou
 # COUNT      = 100                     # cap at 50 results for a quick test run
 # ORBIT_DIRECTION = 'ascending' 
 
-# Steese
-SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
-LAT_MIN    = 65.094274            # southern boundary — Brooks Range, Alaska
-LAT_MAX    = 65.664148           # northern boundary — Brooks Range, Alaska
-LON_MIN    = -146.0          # western boundary — Brooks Range, Alaska
-LON_MAX    = -145.0         # eastern boundary — Brooks Range, Alaska
-DATE_START = "2026-06-01"           # start of search window
-DATE_END   = "2026-08-01"           # end of search window
-COUNT      = 100                     # cap at 50 results for a quick test run
-ORBIT_DIRECTION = 'ascending' 
+# # Steese
+# SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+# LAT_MIN    = 65.094274            # southern boundary — Brooks Range, Alaska
+# LAT_MAX    = 65.664148           # northern boundary — Brooks Range, Alaska
+# LON_MIN    = -146.0          # western boundary — Brooks Range, Alaska
+# LON_MAX    = -145.0         # eastern boundary — Brooks Range, Alaska
+# DATE_START = "2026-06-01"           # start of search window
+# DATE_END   = "2026-08-01"           # end of search window
+# COUNT      = 100                     # cap at 50 results for a quick test run
+# ORBIT_DIRECTION = 'ascending' 
 
 
 LOCAL_PATH  = "./data"                  # local directory for downloaded files
@@ -308,6 +314,17 @@ for i, granule in enumerate(granules):  # one granule per iteration
         # h5py slice indexing reads only the selected rectangle; the full
         # phase raster is never loaded into memory.
         phase_crop      = hf[PHASE_PATH][row_start:row_end, col_start:col_end]       # 2D float array (radians)
+
+        # --- ionospheric / tropospheric correction (see nisar_corrections.py) --
+        # The GUNW distributes these phase screens but does not apply them;
+        # both are subtracted from the unwrapped phase over the same crop.
+        phase_crop, corr_stats = correct_phase(
+            hf, phase_crop, slice(row_start, row_end), slice(col_start, col_end),
+            x_coords[col_start:col_end], y_coords[row_start:row_end],
+            apply_iono=APPLY_IONOSPHERE_CORRECTION, apply_tropo=APPLY_TROPOSPHERE_CORRECTION,
+        )
+        print(f"  Corrections: ionosphere median {corr_stats['iono_median_rad']:.2f} rad, "
+              f"troposphere median {corr_stats['tropo_median_rad']:.2f} rad")  # NaN = not applied
         phase_crop      = phase_crop.astype(np.float32)                             # consistent dtype across files
         coherence_crop  = full_coherence[row_start:row_end, col_start:col_end]       # 2D float array (0-1)
         coherence_crop  = coherence_crop.astype(np.float32)                         # consistent dtype across files

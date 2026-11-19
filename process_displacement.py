@@ -54,6 +54,9 @@ with h5py.File(STACK_PATH, "r") as hf:
     wavelength_m   = float(hf.attrs["wavelength_m"])       # radar wavelength (meters)
 
 print(f"Loaded stack: {phase_3d.shape} (granules x rows x cols)")
+with h5py.File(STACK_PATH, "r") as hf:  # corrections applied by download_nisar.py (absent in older stacks)
+    print(f"Ionosphere corrected: {hf.attrs.get('ionosphere_corrected', 'unknown (older stack)')}, "
+          f"troposphere corrected: {hf.attrs.get('troposphere_corrected', 'unknown (older stack)')}")
 print(f"Dates: {list(dates)}  |  baselines (days): {list(baselines_days)}")
 
 

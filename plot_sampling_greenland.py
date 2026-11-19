@@ -70,6 +70,7 @@ BASEMAP_RES_M      = 100.0
 BASEMAP_Z_FACTOR   = 2.0
 CMR_CACHE_DIR      = "./data/cmr_cache"
 REFRESH_CMR        = False
+SAMPLE_POINT_JSON  = f"./data/{FILE_TAG}_sample_point.json"  # read by plot_dh_greenland.py
 MAP_OUTPUT         = f"./data/{FILE_TAG} sampling_map"
 TIMELINE_OUTPUT    = f"./data/{FILE_TAG} sampling_timeline"
 
@@ -294,6 +295,18 @@ pair_name = lambda off: "centre pair" if abs(off) < 1 else f"{'left' if off > 0 
 print(f"{len(passes)} ICESat-2 passes, {len(crossovers)} centreline crossovers in map, {len(box_xo)} in box")
 print(f"Sample point: {xo_kind} crossover RGT {xo['rgt_asc']:04d} ({pair_name(xo['off_asc'])}) x "
       f"{xo['rgt_desc']:04d} ({pair_name(xo['off_desc'])}) at {lat0:.4f}N {lon0:.4f}E")
+
+# hand the sample point to plot_dh_greenland.py (EPSG:3413 position and the ATL15 cells containing it)
+xg0, yg0 = map_to_grid.transform(x0, y0)
+cell_centre = lambda v, g: float(np.round((v - g["node_offset"]) / g["cell"]) * g["cell"] + g["node_offset"])
+with open(SAMPLE_POINT_JSON, "w") as f:
+    json.dump({"lon": float(lon0), "lat": float(lat0), "x_3413": float(xg0), "y_3413": float(yg0),
+               "kind": xo_kind, "rgt_asc": int(xo["rgt_asc"]), "rgt_desc": int(xo["rgt_desc"]),
+               "off_asc": float(xo["off_asc"]), "off_desc": float(xo["off_desc"]),
+               "atl15_cells": {k: {"title": g["title"], "cell_m": g["cell"],
+                                   "x": cell_centre(xg0, g), "y": cell_centre(yg0, g)} for k, g in atl15.items()}},
+              f, indent=1)
+print(f"Wrote {SAMPLE_POINT_JSON}")
 
 
 # =============================================================================

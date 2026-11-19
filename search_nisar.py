@@ -144,16 +144,16 @@ def search_nisar_granules(
 if __name__ == "__main__":
 
     # --- test parameters -------------------------------------------------------
-    # # Toolik Lake Test Set
-    # SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
-    # LAT_MIN    = 68.6515            # southern boundary — Brooks Range, Alaska
-    # LAT_MAX    = 68.6542              # northern boundary — Brooks Range, Alaska
-    # LON_MIN    = -149.6247             # western boundary — Brooks Range, Alaska
-    # LON_MAX    = -149.5438            # eastern boundary — Brooks Range, Alaska
-    # DATE_START = "2026-06-01"           # start of search window
-    # DATE_END   = "2026-08-01"           # end of search window
-    # COUNT      = 100                     # cap at 50 results for a quick test run
-    # ORBIT_DIRECTION = 'ascending'              # 'ascending', 'descending', or None for both
+    # Toolik Lake Test Set
+    SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+    LAT_MIN    = 68.6500            # southern boundary — Brooks Range, Alaska
+    LAT_MAX    = 68.6542              # northern boundary — Brooks Range, Alaska
+    LON_MIN    = -149.6300             # western boundary — Brooks Range, Alaska
+    LON_MAX    = -149.5438            # eastern boundary — Brooks Range, Alaska
+    DATE_START = "2026-06-01"           # start of search window
+    DATE_END   = "2026-08-01"           # end of search window
+    COUNT      = 100                     # cap at 50 results for a quick test run
+    ORBIT_DIRECTION = 'ascending'              # 'ascending', 'descending', or None for both
 
     # # Site 05
     # SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
@@ -188,16 +188,16 @@ if __name__ == "__main__":
     # COUNT      = 100                     # cap at 50 results for a quick test run
     # ORBIT_DIRECTION = 'ascending' 
    
-    # Steese
-    SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
-    LAT_MIN    = 65.094274            # southern boundary — Brooks Range, Alaska
-    LAT_MAX    = 65.664148           # northern boundary — Brooks Range, Alaska
-    LON_MIN    = -146.0          # western boundary — Brooks Range, Alaska
-    LON_MAX    = -145.0         # eastern boundary — Brooks Range, Alaska
-    DATE_START = "2026-06-01"           # start of search window
-    DATE_END   = "2026-08-01"           # end of search window
-    COUNT      = 100                     # cap at 50 results for a quick test run
-    ORBIT_DIRECTION = 'ascending' 
+    # # Steese
+    # SHORT_NAME = "NISAR_L2_GUNW_PROVISIONAL_V1"
+    # LAT_MIN    = 65.094274            # southern boundary — Brooks Range, Alaska
+    # LAT_MAX    = 65.664148           # northern boundary — Brooks Range, Alaska
+    # LON_MIN    = -146.0          # western boundary — Brooks Range, Alaska
+    # LON_MAX    = -145.0         # eastern boundary — Brooks Range, Alaska
+    # DATE_START = "2026-06-01"           # start of search window
+    # DATE_END   = "2026-08-01"           # end of search window
+    # COUNT      = 100                     # cap at 50 results for a quick test run
+    # ORBIT_DIRECTION = 'ascending' 
 
 
 

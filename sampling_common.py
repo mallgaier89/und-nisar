@@ -108,6 +108,48 @@ def cmr_search(cache_dir, cache_name, refresh=False, **params):
 
 
 # =============================================================================
+# Vector features from an ArcGIS REST layer (e.g. USGS NHD waterbodies),
+# fetched as GeoJSON in lon/lat for a bounding box, paged, and cached.
+# =============================================================================
+def arcgis_geojson(layer_url, geo_bbox, where, cache_path, out_fields="*", refresh=False):
+    """All features of an ArcGIS MapServer layer intersecting geo_bbox (W, S, E, N) matching `where`."""
+    params = {"geometry": ",".join(f"{v:.4f}" for v in geo_bbox), "geometryType": "esriGeometryEnvelope",
+              "inSR": 4326, "spatialRel": "esriSpatialRelIntersects", "where": where, "outFields": out_fields,
+              "outSR": 4326, "f": "geojson"}
+    if os.path.exists(cache_path) and not refresh:
+        with open(cache_path) as f:
+            cached = json.load(f)
+        if cached.get("params") == {**params, "url": layer_url}:
+            return cached["features"]
+    features, offset = [], 0
+    while True:
+        r = requests.get(f"{layer_url}/query", params={**params, "resultOffset": offset}, timeout=300)
+        r.raise_for_status()
+        page = r.json()
+        features += page.get("features", [])
+        if not page.get("exceededTransferLimit") and not page.get("properties", {}).get("exceededTransferLimit"):
+            break
+        offset = len(features)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "w") as f:
+        json.dump({"params": {**params, "url": layer_url}, "features": features}, f)
+    return features
+
+
+def polygon_path(geometry, to_map):
+    """Matplotlib compound path (exterior rings + holes) of a GeoJSON (Multi)Polygon, in map coordinates."""
+    polys = geometry["coordinates"] if geometry["type"] == "MultiPolygon" else [geometry["coordinates"]]
+    verts, codes = [], []
+    for poly in polys:
+        for ring in poly:
+            ring = np.asarray(ring, float)
+            x, y = to_map.transform(ring[:, 0], ring[:, 1])
+            verts += list(zip(x, y))
+            codes += [Path.MOVETO] + [Path.LINETO] * (len(ring) - 2) + [Path.CLOSEPOLY]
+    return Path(np.array(verts), codes)
+
+
+# =============================================================================
 # Basemap: hillshade of the Copernicus GLO-90 DEM (public AWS open data, 1x1
 # degree COG tiles, cached locally), mosaicked and reprojected onto the map
 # grid. Tiles over open ocean don't exist and are skipped.
@@ -116,8 +158,8 @@ def dem_tile_name(lat, lon):
     return f"{'N' if lat >= 0 else 'S'}{abs(lat):02d}_00_{'E' if lon >= 0 else 'W'}{abs(lon):03d}_00"
 
 
-def load_hillshade(geo_bbox, map_crs, left, right, bottom, top, cache_dir, res_m=100.0, z_factor=2.0):
-    """Hillshade (0-1) on a map-CRS grid covering [left, right] x [bottom, top], and its imshow extent."""
+def dem_mosaic(geo_bbox, cache_dir):
+    """Copernicus GLO-90 mosaic (EPSG:4326, heights in m above the EGM2008 geoid) covering geo_bbox (W, S, E, N)."""
     os.makedirs(cache_dir, exist_ok=True)
     srcs = []
     for lat in range(int(np.floor(geo_bbox[1])), int(np.floor(geo_bbox[3])) + 1):
@@ -135,6 +177,13 @@ def load_hillshade(geo_bbox, map_crs, left, right, bottom, top, cache_dir, res_m
     mosaic, mosaic_tf = merge(srcs)
     for s in srcs:
         s.close()
+    return mosaic[0], mosaic_tf
+
+
+def load_hillshade(geo_bbox, map_crs, left, right, bottom, top, cache_dir, res_m=100.0, z_factor=2.0):
+    """Hillshade (0-1) on a map-CRS grid covering [left, right] x [bottom, top], and its imshow extent."""
+    mosaic, mosaic_tf = dem_mosaic(geo_bbox, cache_dir)
+    mosaic = mosaic[None]  # keep the band axis used below
     n_cols = int(np.ceil((right - left) / res_m))
     n_rows = int(np.ceil((top - bottom) / res_m))
     dem = np.full((n_rows, n_cols), np.nan, np.float32)

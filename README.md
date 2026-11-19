@@ -47,7 +47,24 @@ single time-series stack:
    is curved in projected space) rather than converting the swath to lon/lat,
    which matters near the poles where polar-stereographic swaths can be
    significantly rotated relative to lines of constant latitude/longitude.
-3. **Frame edge mask** (`frame_edge_keep_mask`): NISAR GUNW granules are
+3. **Ionospheric / tropospheric correction** (`nisar_corrections.py`). The
+   GUNW product distributes these phase screens but does not apply them to
+   `unwrappedPhase`. Each can be subtracted from each crop:
+   - the `ionospherePhaseScreen` (split-spectrum estimate, on the phase grid);
+   - the wet + hydrostatic tropospheric phase screens. These are coarse 3D
+     `radarGrid` cubes, interpolated in x, y and height at each pixel's
+     Copernicus GLO-90 terrain height.
+
+   Sign: ISCE3 writes the tropospheric screen as `−4π/λ·(delay_ref −
+   delay_sec)`, the phase contained in the interferogram. Subtracting both
+   screens reduces the phase scatter over stable bedrock, which was checked
+   in Greenland. Each correction has a flag, recorded as attributes in the
+   stack file:
+   - `APPLY_TROPOSPHERE_CORRECTION`: default on.
+   - `APPLY_IONOSPHERE_CORRECTION`: default **off**. The screen proved
+     unreliable over the Greenland ice sheet; see Limitations, "Ionospheric
+     correction over the Greenland ice sheet".
+4. **Frame edge mask** (`frame_edge_keep_mask`): NISAR GUNW granules are
    geocoded onto a rectangular grid, but the imaged swath is a rotated
    parallelogram within it. Adjacent frames along a track overlap, and the
    least reliable pixels are nearest the true swath boundary — not the
@@ -55,17 +72,17 @@ single time-series stack:
    nearest invalid/exterior pixel and nulls the outermost `EDGE_MASK_FRACTION`
    (default 10%) of the frame's valid area, following the swath's true
    shape regardless of how the search bbox happens to crop it.
-4. **Incidence angle interpolation**: incidence angle is only tabulated on a
+5. **Incidence angle interpolation**: incidence angle is only tabulated on a
    coarse `(height, row, col)` radar grid, so it's bilinearly interpolated
    onto the full-resolution phase grid at the height nearest the scene's
    median reference terrain height.
-5. **Temporal baseline**: each NISAR GUNW filename encodes a reference and
+6. **Temporal baseline**: each NISAR GUNW filename encodes a reference and
    secondary acquisition date; their difference (days) is stored per layer
    for use in the rate fit downstream.
-6. **Canvas assembly**: builds a shared output grid from the union of all
+7. **Canvas assembly**: builds a shared output grid from the union of all
    crops' actual projected extents (not a geographic reprojection), so every
    crop places onto the canvas at an exact integer pixel offset.
-7. **Stack persistence** (`save_stack`): writes `phase_3d`, `coherence_3d`,
+8. **Stack persistence** (`save_stack`): writes `phase_3d`, `coherence_3d`,
    `incidence_3d` (each `(n_granules, rows, cols)`), `dates`,
    `baselines_days`, canvas coordinates, and CRS/radar metadata to a single
    HDF5 file (`./data/timeseries_stack.h5`) for `process_displacement.py`.
@@ -173,7 +190,12 @@ Writes `data/Toolik sampling_map.{png,pdf}` and
     labelled `track+direction-frame`;
   - all six ICESat-2 nominal beam tracks (thick: centre pair on the RGT;
     thin: outer pairs at ±3.3 km);
-  - the crossovers, with the sample point marked.
+  - the crossovers, with the sample point marked;
+  - lakes ≥ 0.05 km² from the USGS National Hydrography Dataset (NHD
+    waterbody polygons of lakes/ponds and reservoirs). They come from the
+    public USGS National Map service and are cached in `data/nhd/`, drawn
+    in a muted gray-blue kept distinct from NISAR's blue. Toolik Lake is
+    outlined and labelled.
 
   A 1 km zoom panel at the sample point shows the outlines of NISAR's 80 m
   pixels against both beams of each crossing centre pair and the ATL06
@@ -257,6 +279,66 @@ on both figures. To store a login once:
 python -c "import earthaccess; earthaccess.login(persist=True)"
 ```
 
+`plot_sampling_greenland.py` also writes the sample point (position, crossing
+RGTs, and the ATL15 cells containing it) to `data/Point660_sample_point.json`
+for the script below.
+
+### `plot_dh_greenland.py` — NISAR vs ATL15 change at the crossover pixel
+
+Writes `data/Point660 dh_timeseries.{png,pdf}` (all three panels). It also
+writes each panel as a separate figure with its own legend and source note:
+`..._a_ATL15`, `..._b_NISAR` and `..._c_coherence`, each `.{png,pdf}`. Run
+`plot_sampling_greenland.py` first. Needs an Earthdata login.
+
+- **(a) ATL15 height change, 2019 to mid-2026.** `delta_h` (relative to the
+  ATL14 2020.0 surface, ±σ) at the 1 km 3-month and 2.5 km monthly cells
+  containing the sample point.
+- **(b) NISAR per-pair "apparent vertical" displacement.** Shown for the 80 m
+  pixel at the crossover and as the mean over the ATL15 1 km cell. For
+  comparison it carries ATL15's 2019–2025 seasonal height change scaled to a
+  12-day pair: 1 km Jul→Oct and 2.5 km Sep→Nov, mean ± SD.
+- **(c) Per-pair coherence.** The ice pixel at the crossover against the
+  bedrock reference, with the pipeline's 0.15 threshold.
+
+**NISAR processing.** It mirrors the InSAR pipeline (`download_nisar.py`
+dataset paths and incidence interpolation; `process_displacement.py`
+coherence mask, sign convention and LOS/cos θ projection). The pipeline
+scripts themselves are not modified. Instead of downloading full granules
+(~2 GB each), only small windows are streamed from each GUNW file with
+`earthaccess`:
+
+- the ATL15 1 km cell around the sample point;
+- a ~6 × 6 km bedrock reference region west of Point 660. Phase is referenced
+  to the median of its coherent, ice-free (GIMP) pixels in the dominant
+  connected component.
+
+Results are cached in `data/nisar_dh_point660.json` and ATL15 values in
+`data/atl15_dh_point660.json`, so reruns are offline.
+
+**What the figure shows (and why NISAR is not elevation change here):**
+
+- **Melt-season decorrelation.** 12-day pairs on the ice have coherence
+  0.03–0.15 from 20 June to ~12 September 2026, below the 0.15 threshold.
+  No pair is valid until late September, while bedrock stays at 0.4–0.7.
+- **Flow dominates line of sight.** The pipeline's LOS/cos θ "vertical"
+  assumes purely vertical motion. On flowing ice the horizontal-flow
+  component dominates the line of sight. The valid pairs show this directly:
+  both ascending tracks give −0.3 to −0.9 m per pair and the descending track
+  +0.6 m, so the signs are opposite. Comparing NISAR with ATL15 elevation
+  change would require removing the flow component (e.g. with ice velocity
+  and surface slope), or combining ascending and descending geometries.
+- **Little overlap.** ATL15 release 006 ends 2026-07-02, and NISAR data over
+  the area start 2026-06-20.
+- **Corrections, provisional data.** As in the pipeline
+  (`nisar_corrections.py`), the GUNW tropospheric phase screens are
+  applied: about 1 cm between ice and bedrock. The ionospheric screen is
+  off by default: when applied, it shifted the ice values by 15–40 cm per
+  pair, with the same sign as each track's flow signal; see Limitations.
+  The per-pair correction sizes and a bedrock sign check are printed.
+  Smooth corrections cannot fix the flow geometry, unwrapping cycle slips
+  across the decorrelated margin, or small-scale scintillation. The data are
+  provisional.
+
 ## Limitations
 
 <!-- Content below is copied verbatim from LIMITATIONS.md; keep the two files in sync. -->
@@ -313,6 +395,12 @@ motion.
    `NISAR_L2_GUNW_PROVISIONAL_V1` — an early, not-yet-validated product from a
    recently launched mission. Orbital, tropospheric, and ionospheric correction
    terms are expected to carry larger residual errors than a validated product.
+   The GUNW tropospheric phase screens are now subtracted by default
+   (`nisar_corrections.py`, see the pipeline description). The ionospheric screen
+   can be applied but is off by default, because it proved unreliable over the
+   Greenland ice sheet (see below). Stacks built before this change are
+   uncorrected; their stack file lacks the `ionosphere_corrected` /
+   `troposphere_corrected` attributes.
 
 #### Why the angular distortion map is less affected
 
@@ -359,7 +447,93 @@ features rather than showing spurious sharp artifacts.
   `connectedComponents` would increase the risk).
 - **Ionospheric scintillation** is a known small-scale L-band artifact source at
   auroral latitudes (northern Alaska sits under/near the auroral oval) and has not
-  been independently verified as absent here.
+  been independently verified as absent here. The GUNW split-spectrum ionosphere
+  screen (available, but off by default) is spatially smoothed, so even when applied
+  it would not remove small-scale scintillation.
+
+#### Ionospheric correction over the Greenland ice sheet (GUNW phase screen)
+
+The GUNW product distributes an `ionospherePhaseScreen` (split-spectrum
+estimate) that is not applied to `unwrappedPhase`. `nisar_corrections.py` can
+subtract it. It was tested in `plot_dh_greenland.py` on the Greenland
+comparison: the ATL15 1 km cell at the ICESat-2 crossover east of Point 660,
+referenced to ice-free bedrock ~14 km to the west, over 25 twelve-day pairs on
+tracks 088A, 160A and 141D (June–October 2026). The tropospheric screens were
+applied at the same time.
+
+##### Observations
+
+- **Effect on the five pairs valid on the ice.** All five fall in late
+  September–October; the melt-season pairs are masked by coherence.
+  Values are 1 km cell means in the pipeline's "apparent vertical" units
+  (LOS / cos θ):
+
+  | Pair | Uncorrected | Ionosphere + troposphere | Ionosphere, target − reference | Troposphere, target − reference |
+  |---|---|---|---|---|
+  | 088A 12–24 Sep | −36 cm | −65 cm | −29 cm | 0.0 cm |
+  | 088A 24 Sep – 6 Oct | −35 cm | −67 cm | −32 cm | −0.5 cm |
+  | 088A 6–18 Oct | −33 cm | −67 cm | −39 cm | +0.9 cm |
+  | 141D 27 Sep – 9 Oct | +60 cm | +75 cm | +16 cm | −0.6 cm |
+  | 160A 29 Sep – 11 Oct | −82 cm | −104 cm | −22 cm | −0.4 cm |
+
+- **Size of the ionosphere correction.** Over all 25 pairs, the ionosphere
+  correction between the ice target and the bedrock reference has a median
+  magnitude of 39 cm (range −129 to +59 cm). The tropospheric correction is
+  small: median 0.6 cm, at most 1.6 cm.
+- **On stable bedrock.** Subtracting the ionosphere screen reduces the phase
+  scatter compared with adding it in 18 of 25 pairs (median scatter
+  0.72 rad raw, 0.53 rad subtracted, 1.10 rad added), which supports the sign
+  convention. But subtracting it still *increases* the scatter compared with
+  no correction in 9 of 25 pairs.
+- **On the ice.** In every valid pair the ionosphere correction has the same
+  sign as that track's flow-dominated signal: negative on both ascending
+  tracks, positive on the descending track. It therefore widens the
+  ascending/descending disagreement, and leaves the 088A/160A difference
+  (~0.37 m) unchanged.
+
+##### Interpretation
+
+- **Implausibly large.** A differential ionospheric delay of tens of
+  centimetres, and more than a metre in one pair, over ~14 km is much larger
+  than is plausible under most conditions. Corrections that consistently
+  track the viewing geometry are also unlikely to be truly ionospheric,
+  because the ionosphere is independent of ice flow.
+- **Likely cause.** The split-spectrum estimate is probably unreliable over
+  the ice:
+  - the sub-band interferograms have even lower coherence than the full-band
+    one (0.03–0.15 on the ice in the melt season, ~0.2–0.4 in the valid
+    pairs), which promotes sub-band unwrapping errors;
+  - the product fills gaps from the nearest valid value and smooths with an
+    iterative Gaussian filter (`ionosphereFilling = nearest`,
+    `ionosphereFiltering = Iterative gaussian filter` in the GUNW metadata),
+    which spreads such errors across the ice margin.
+
+  Motion-related errors leaking into the dispersive estimate on fast-moving
+  ice would explain the sign pattern. That is a hypothesis; it was not tested
+  here.
+- **Not a sign error.** The sign convention is supported both by the ISCE3
+  definition and by the bedrock test.
+
+##### Conclusions
+
+- **Ionosphere off, troposphere on.** The ionosphere correction is **off by
+  default** (`APPLY_IONOSPHERE_CORRECTION = False` in `download_nisar.py`
+  and `plot_dh_greenland.py`). The tropospheric correction stays on: it is
+  small and behaves consistently.
+- **Before enabling it again,** test at least one of:
+  - masking the screen with `ionospherePhaseScreenUncertainty` and/or
+    coherence;
+  - estimating the ionosphere only from coherent bedrock and interpolating a
+    smooth surface across the ice;
+  - checking the screen on the higher-coherence Alaska permafrost sites;
+  - re-testing with validated (non-provisional) GUNW data.
+- **What remains uncorrected.** The ionosphere is still a likely error source
+  of centimetres to decimetres per pair, including at the Alaska sites. NISAR
+  results on the ice remain qualitative.
+- **Existing Alaska outputs.** The Alaska stacks and GeoTIFFs produced before
+  this change were not re-processed. They carry no phase-screen corrections
+  (their stack files lack the `ionosphere_corrected` /
+  `troposphere_corrected` attributes).
 
 #### Current status
 
